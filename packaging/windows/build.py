@@ -50,7 +50,7 @@ def run(*cmd, **kw):
 
 
 def output(*cmd):
-    return run(*cmd, capture_output=True, text=True).stdout.strip()
+    return run(*cmd, capture_output=True, encoding="utf-8").stdout.strip()
 
 
 def fetch(name):
@@ -281,7 +281,15 @@ def main():
     clean = {k: os.environ[k] for k in ("SystemRoot", "SystemDrive", "TEMP", "TMP", "USERPROFILE")}
     clean["PATH"] = f"{system}\\System32;{system}"
     clean["LOCALAPPDATA"] = str(BUILD / "localappdata")
-    result = run(exe, HERE / "smoke.py", env=clean, capture_output=True, text=True, check=False)
+    result = run(
+        exe,
+        HERE / "smoke.py",
+        env=clean,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     print(result.stdout, result.stderr[-4000:], sep="\n")
     if result.returncode != 0 or "smoke ok" not in result.stdout:
         sys.exit("Smoke test failed")
