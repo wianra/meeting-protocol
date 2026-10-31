@@ -47,7 +47,8 @@ MAX_PATH_IN_ZIP = 150  # Explorer's unzip fails beyond MAX_PATH once nested in D
 
 def run(*cmd, **kw):
     print("+", " ".join(map(str, cmd)), flush=True)
-    return subprocess.run([str(c) for c in cmd], check=True, **kw)
+    check = kw.pop("check", True)
+    return subprocess.run([str(c) for c in cmd], check=check, **kw)
 
 
 def output(*cmd):
