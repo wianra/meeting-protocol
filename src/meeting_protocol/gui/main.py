@@ -39,11 +39,11 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -135,8 +135,12 @@ QTextEdit#editor, QLineEdit, QComboBox, QSpinBox {{ background: {CARD}; border: 
   border-radius: 6px; padding: 6px 8px; selection-background-color: {ACCENT}; }}
 QTextEdit#editor:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
   border: 1px solid {ACCENT}; }}
-QProgressBar {{ border: 0; background: {HOVER}; border-radius: 3px; max-height: 6px; }}
-QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
+QWidget#process {{ background: {BG}; }}
+QPushButton#hard, QPushButton#hardPrimary {{ border: 2px solid {TEXT}; border-radius: 0;
+  min-height: 36px; padding: 0 20px; font-weight: 700; }}
+QPushButton#hardPrimary {{ background: {ACCENT}; border-color: {ACCENT}; color: #ffffff; }}
+QPushButton#hardPrimary:hover {{ background: {ACCENT_DARK}; border-color: {ACCENT_DARK}; }}
+QPushButton#hard:disabled, QPushButton#hardPrimary:disabled {{ border-color: {LINE}; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {CONTROL}; border-radius: 3px; min-height: 30px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
@@ -907,6 +911,472 @@ class NewRecording(QDialog):
         return args
 
 
+# -- processing -----------------------------------------------------------------------------
+LANES = (("audio", "Audio"), ("text", "Text"), ("speakers", "Speakers"), ("draft", "Draft"))
+LANE_OF = {"decode": "audio", "transcription": "text", "export": "draft"}  # Others: speakers.
+LANGUAGES = {"auto": "Any language", "de": "German", "fr": "French", "it": "Italian"}
+
+
+def mono(size, weight=QFont.Weight.Normal):
+    result = font(size, weight)
+    result.setFamilies(["SF Mono", "Menlo", "Monaco"])
+    return result
+
+
+def caps(text, size=10, color=MUTED, weight=QFont.Weight.Normal, spacing=8):
+    """Small monospaced uppercase label, as the strip design uses for every caption."""
+    widget = QLabel(text.upper())
+    face = mono(size, weight)
+    face.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 100 + spacing)
+    widget.setFont(face)
+    widget.setStyleSheet(f"color: {color};")
+    return widget
+
+
+def rule(height, color):
+    line = QFrame()
+    line.setFixedHeight(height)
+    line.setStyleSheet(f"background: {color}; border: 0;")
+    return line
+
+
+class ProcessStrip(QWidget):
+    """The recording from start to end: loudness, then one lane per step, and a playhead
+    where the text has got to. State comes from `ProcessPage`; this only paints it."""
+
+    LABEL_W, RULER_H, WAVE_H, LANE_H, GAP = 96, 16, 56, 14, 12
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(self.RULER_H + self.WAVE_H + 4 * self.LANE_H + 5 * self.GAP)
+        self.levels, self.duration, self.at = None, 0.0, None
+        self.lanes, self.current, self.skipped, self.blink = {}, None, set(), False
+
+    def lane_top(self, index):
+        return self.RULER_H + self.WAVE_H + 2 * self.GAP + index * (self.LANE_H + self.GAP)
+
+    def text_fraction(self):
+        text = self.lanes.get("text")
+        if not text:
+            return 0.0
+        if text["complete"]:
+            return 1.0
+        if self.at is not None and self.duration:
+            return min(1.0, self.at / self.duration)
+        return text["done"] / text["total"] if text["total"] else 0.0
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        left = self.LABEL_W + 14
+        width = max(1.0, self.width() - left)
+
+        # Captions on the left.
+        painter.setFont(mono(10))
+        wave_top = self.RULER_H + self.GAP
+        painter.setPen(QColor(MUTED))
+        painter.drawText(
+            QRectF(0, wave_top, self.LABEL_W, self.WAVE_H), Qt.AlignmentFlag.AlignVCenter, "SOUND"
+        )
+        for index, (key, name) in enumerate(LANES):
+            lane = self.lanes.get(key)
+            color = ACCENT_DARK if key == self.current else TEXT if lane else MUTED
+            rect = QRectF(0, self.lane_top(index), self.LABEL_W, self.LANE_H)
+            painter.setPen(QColor(color))
+            painter.setFont(mono(10, QFont.Weight.Bold))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignVCenter, f"{index + 1:02}")
+            painter.setFont(mono(10))
+            painter.drawText(
+                rect.adjusted(22, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, name.upper()
+            )
+
+        # Time ruler: start, thirds, end.
+        painter.setPen(QColor(MUTED))
+        for i, align in enumerate(
+            (
+                Qt.AlignmentFlag.AlignLeft,
+                Qt.AlignmentFlag.AlignHCenter,
+                Qt.AlignmentFlag.AlignHCenter,
+                Qt.AlignmentFlag.AlignRight,
+            )
+        ):
+            x = left + width * i / 3
+            rect = QRectF(
+                x - (0 if i == 0 else width / 6 if i < 3 else width / 3), 0, width / 3, self.RULER_H
+            )
+            painter.drawText(
+                rect, align | Qt.AlignmentFlag.AlignVCenter, clock(self.duration * i / 3)
+            )
+
+        # Loudness; flat placeholders until the audio has been read.
+        done = self.text_fraction()
+        bars = len(self.levels) if self.levels else 96
+        gap = 2.0 if width / bars >= 4 else 0.0
+        bar_w = (width - gap * (bars - 1)) / bars
+        for i in range(bars):
+            h = 10 + 46 * self.levels[i] if self.levels else 4
+            color = TEXT if (i + 0.5) / bars <= done else WAVE
+            painter.fillRect(
+                QRectF(left + i * (bar_w + gap), wave_top + (self.WAVE_H - h) / 2, bar_w, h),
+                QColor(color),
+            )
+
+        for index, (key, _) in enumerate(LANES):
+            self.paint_lane(painter, key, QRectF(left, self.lane_top(index), width, self.LANE_H))
+
+        # Playhead while the text is being written.
+        text = self.lanes.get("text")
+        if text and not text["complete"]:
+            x = left + done * width
+            painter.fillRect(QRectF(x - 1, 0, 2, self.height()), QColor(ACCENT))
+            painter.setFont(mono(10, QFont.Weight.Bold))
+            tag = clock(self.at if self.at is not None else done * self.duration)
+            tag_w = painter.fontMetrics().horizontalAdvance(tag) + 10
+            tag_x = x + 2 if x + 2 + tag_w <= self.width() else x - 2 - tag_w
+            painter.fillRect(QRectF(tag_x, 0, tag_w, 18), QColor(ACCENT))
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(QRectF(tag_x, 0, tag_w, 18), Qt.AlignmentFlag.AlignCenter, tag)
+
+    def paint_lane(self, painter, key, rect):
+        lane = self.lanes.get(key)
+        if lane is None or key in self.skipped:
+            painter.fillRect(rect, QColor(BG))
+            painter.setPen(QPen(QColor(WAVE), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+            if key in self.skipped:
+                painter.setFont(mono(9))
+                painter.setPen(QColor(MUTED))
+                painter.drawText(
+                    rect.adjusted(8, 0, 0, 0),
+                    Qt.AlignmentFlag.AlignVCenter,
+                    "NOT REQUESTED · TEXT ONLY",
+                )
+            return
+        total = lane["total"]
+        if lane["complete"] and not lane["cells"]:
+            painter.fillRect(rect, QColor(TEXT))
+            return
+        if not lane["cells"]:
+            # One step of unknown length: a bar filling up inside the lane.
+            painter.fillRect(rect, QColor(CARD))
+            fraction = lane["done"] / total if total else 0.0
+            painter.fillRect(
+                QRectF(rect.x(), rect.y(), rect.width() * fraction, rect.height()), QColor(TEXT)
+            )
+            painter.setPen(QPen(QColor(ACCENT if key == self.current else CONTROL), 2))
+            painter.drawRect(rect.adjusted(1, 1, -1, -1))
+            return
+        cells = max(1, total)
+        gap = 2.0 if rect.width() / cells >= 5 else 0.0
+        cell_w = (rect.width() - gap * (cells - 1)) / cells
+        now = lane["done"] if key == self.current and not lane["complete"] else -1
+        for i in range(cells):
+            cell = QRectF(rect.x() + i * (cell_w + gap), rect.y(), cell_w, rect.height())
+            if lane["complete"] or i < lane["done"]:
+                painter.fillRect(cell, QColor(TEXT))
+            elif i == now:
+                painter.fillRect(cell, QColor(ACCENT if self.blink else ACCENT_TINT))
+                painter.setPen(QPen(QColor(ACCENT), 2))
+                painter.drawRect(cell.adjusted(1, 1, -1, -1))
+            else:
+                painter.fillRect(cell, QColor(CARD))
+                if gap:
+                    painter.setPen(QPen(QColor(LINE), 1))
+                    painter.drawRect(cell.adjusted(0.5, 0.5, -0.5, -0.5))
+
+
+class HardCard(QFrame):
+    """A white card with a 2 px border and a hard offset shadow."""
+
+    SHADOW = 6
+
+    def __init__(self):
+        super().__init__()
+        self.setContentsMargins(2, 2, 2 + self.SHADOW, 2 + self.SHADOW)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        card = QRectF(self.rect()).adjusted(0, 0, -self.SHADOW, -self.SHADOW)
+        painter.fillRect(card.translated(self.SHADOW, self.SHADOW), QColor(TEXT))
+        painter.fillRect(card, QColor(CARD))
+        painter.setPen(QPen(QColor(TEXT), 2))
+        painter.drawRect(card.adjusted(1, 1, -1, -1))
+
+
+class ProcessPage(QWidget):
+    """Design B, the recording strip: shown while a meeting is processed, and frozen with
+    Resume when it stopped before the transcript was ready."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("process")
+        self.blink = QTimer(self)
+        self.blink.setInterval(600)
+        self.blink.timeout.connect(self.tick)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(40, 36, 40, 24)
+        layout.setSpacing(0)
+        self.crumb = caps("", 12, MUTED, spacing=5)
+        layout.addWidget(self.crumb)
+        self.heading = label("", 30, weight=QFont.Weight.ExtraBold)
+        self.heading.setContentsMargins(0, 4, 0, 0)
+        layout.addWidget(self.heading)
+        intro = label(
+            "Each step works through the recording from start to end. "
+            "The blue line is where the transcript has got to.",
+            13,
+            "muted",
+            wrap=True,
+        )
+        intro.setContentsMargins(0, 8, 0, 0)
+        layout.addWidget(intro)
+        layout.addSpacing(24)
+
+        card = HardCard()
+        body = QVBoxLayout(card)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(16, 12, 16, 12)
+        self.file = label("", 14, weight=QFont.Weight.ExtraBold)
+        head.addWidget(self.file, 1)
+        self.facts = caps("", 11, MUTED, QFont.Weight.Bold, 5)
+        head.addWidget(self.facts)
+        body.addLayout(head)
+        body.addWidget(rule(2, TEXT))
+        self.strip = ProcessStrip()
+        holder = QVBoxLayout()
+        holder.setContentsMargins(20, 18, 20, 18)
+        holder.addWidget(self.strip)
+        body.addLayout(holder)
+        body.addWidget(rule(1, LINE))
+        stats = QHBoxLayout()
+        stats.setSpacing(0)
+        self.windows, self.left, self.step = [], [], []
+        for index, caption in enumerate(("Windows written", "Minutes left, about", "Step")):
+            if index:
+                line = QFrame()
+                line.setFixedWidth(1)
+                line.setStyleSheet(f"background: {LINE};")
+                stats.addWidget(line)
+            cell = QVBoxLayout()
+            cell.setContentsMargins(14, 10, 14, 12)
+            cell.setSpacing(6)
+            value = label("—", 24, weight=QFont.Weight.ExtraBold)
+            cell.addWidget(value)
+            cell.addWidget(caps(caption, 10, MUTED))
+            stats.addLayout(cell, 1)
+            (self.windows, self.left, self.step)[index].append(value)
+        self.windows, self.left, self.step = self.windows[0], self.left[0], self.step[0]
+        body.addLayout(stats)
+        body.addWidget(rule(1, HOVER))
+        self.now_row = QFrame()
+        self.now_row.setStyleSheet(f"background: {SOFT};")
+        now = QHBoxLayout(self.now_row)
+        now.setContentsMargins(16, 12, 16, 12)
+        now.setSpacing(14)
+        self.now_caption = caps("", 11, MUTED, QFont.Weight.Bold, 5)
+        now.addWidget(self.now_caption)
+        self.now_text = label("", 14)
+        self.now_text.setStyleSheet("color: #3f4249;")
+        self.now_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        now.addWidget(self.now_text, 1)
+        body.addWidget(self.now_row)
+        layout.addWidget(card)
+        layout.addSpacing(24)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        self.pause_button = button("Pause", "hard")
+        actions.addWidget(self.pause_button)
+        # Shown when the meeting stopped before its transcript was ready.
+        self.resume_card = QWidget()
+        resume = QHBoxLayout(self.resume_card)
+        resume.setContentsMargins(0, 0, 0, 0)
+        resume.setSpacing(10)
+        self.resume_button = button("Resume", "hardPrimary")
+        self.add_speakers_button = button("Add speakers", "hard")
+        self.delete_button = TrashButton("Delete this meeting", framed=True)
+        for widget in (self.resume_button, self.add_speakers_button, self.delete_button):
+            resume.addWidget(widget)
+        actions.addWidget(self.resume_card)
+        actions.addSpacing(6)
+        self.note = label("", 12, "muted", wrap=True)
+        actions.addWidget(self.note, 1)
+        layout.addLayout(actions)
+        layout.addStretch()
+        self.reset()
+
+    # -- state -----------------------------------------------------------------------------
+    def reset(self, root=None, name="", resuming=False):
+        self.root, self.cfg, self.busy, self.resuming = root, {}, False, resuming
+        self.lanes, self.current, self.status = {}, None, ""
+        self.latest = self.last_save = None
+        self.rates = []
+        self.strip.levels, self.strip.at, self.strip.duration = None, None, 0.0
+        self.heading.setText(name.upper())
+        self.file.setText(name.upper())
+        self.facts.setText("")
+        if root:
+            self.load(root)
+        self.refresh()
+
+    def load(self, root):
+        """Read the meeting's settings, once the worker has said which meeting it is."""
+        self.root = Path(root)
+        self.cfg = read_config(self.root)
+        path = Path(self.cfg.get("input", self.root.name))
+        self.heading.setText(path.stem.upper())
+        self.file.setText(path.name.upper())
+        self.strip.duration = float((self.cfg.get("audio") or {}).get("duration") or 0)
+        self.strip.skipped = {"speakers"} if self.cfg.get("asr_only") else set()
+        facts = [clock(self.strip.duration)] if self.strip.duration else []
+        if self.cfg.get("asr_only"):
+            facts.append("text only")
+        elif self.cfg.get("min_speakers"):
+            facts.append(f"{self.cfg['min_speakers']}–{self.cfg.get('max_speakers')} speakers")
+        if self.cfg.get("language"):
+            facts.append(LANGUAGES.get(self.cfg["language"], self.cfg["language"]))
+        self.facts.setText(" · ".join(facts).upper())
+        self.load_levels()
+
+    def load_levels(self):
+        if self.root and self.strip.levels is None:
+            self.strip.levels = envelope(self.root, 120)
+
+    def restore(self, root):
+        """The frozen strip for a meeting that is not running: its last saved progress."""
+        self.reset(root)
+        store = Store(self.root)
+        try:
+            events = store.latest_events()
+        finally:
+            store.close()
+        for stage, (done, total, message) in events.items():
+            self.apply({"stage": stage, "done": done, "total": total, "message": message})
+        self.refresh()
+
+    def start(self, root=None, name="", resuming=False):
+        if root:
+            self.restore(root)  # Resuming starts from what is already saved.
+        else:
+            self.reset(name=name)
+        self.resuming, self.busy = resuming, True
+        self.status = "Checking the recording and the local models…"
+        self.blink.start()
+        self.refresh()
+
+    def stop(self):
+        self.busy = False
+        self.blink.stop()
+        self.strip.blink = False
+
+    def tick(self):
+        self.strip.blink = not self.strip.blink
+        self.strip.update()
+
+    def apply(self, event):
+        stage, done, total = event["stage"], int(event.get("done", 0)), int(event.get("total", 0))
+        lane = LANE_OF.get(stage, "speakers")
+        order = [key for key, _ in LANES]
+        self.lanes[lane] = {
+            "done": done,
+            "total": total,
+            # Audio blocks and text windows are counted; speaker steps only have a share.
+            "cells": lane in ("audio", "text"),
+            "complete": total > 0 and done >= total and lane != "speakers",
+        }
+        # Starting a step means every earlier one has finished.
+        for key in order[: order.index(lane)]:
+            if key in self.lanes:
+                self.lanes[key]["complete"] = True
+                if self.lanes[key]["cells"]:
+                    self.lanes[key]["total"] = max(1, self.lanes[key]["done"])
+            elif key not in self.strip.skipped:
+                self.lanes[key] = {"done": 1, "total": 1, "cells": False, "complete": True}
+        self.current = lane
+        message = event.get("message", "")
+        if lane == "speakers" and stage != "diarization":
+            message = f"{stage.replace('_', ' ').capitalize()} · {message}"
+        self.status = message
+        if lane == "text":
+            self.load_levels()
+            if "at" in event:
+                self.strip.at = float(event["at"])
+            if "latest" in event:
+                self.latest = (float(event.get("latest_at", 0)), event["latest"])
+            self.measure(done, total)
+        self.refresh()
+
+    def measure(self, done, total):
+        """Seconds per text window, from windows written now. Saved windows replayed on
+        resume arrive in a quick burst and would make the estimate absurd, so they are
+        skipped."""
+        now = time.monotonic()
+        if self.busy and self.last_save and done > self.last_save[1]:
+            seconds = now - self.last_save[0]
+            if seconds >= 1.0:
+                self.rates = [*self.rates[-4:], seconds / (done - self.last_save[1])]
+        self.last_save = (now, done)
+
+    def minutes_left(self):
+        text = self.lanes.get("text")
+        if not self.busy or self.current != "text" or len(self.rates) < 2 or not text:
+            return "—"
+        seconds = (text["total"] - text["done"]) * sum(self.rates) / len(self.rates)
+        return "< 1" if seconds < 60 else str(round(seconds / 60))
+
+    def refresh(self):
+        steps = [key for key, _ in LANES if key not in self.strip.skipped]
+        self.strip.lanes, self.strip.current = self.lanes, self.current if self.busy else None
+        text = self.lanes.get("text")
+        self.windows.setText(f"{text['done']} / {text['total']}" if text else "—")
+        self.left.setText(self.minutes_left())
+        position = steps.index(self.current) + 1 if self.current in steps else None
+        self.step.setText(f"{position} / {len(steps)}" if position else f"— / {len(steps)}")
+        if self.busy:
+            self.crumb.setText("MEETINGS / RESUMING" if self.resuming else "MEETINGS / NEW")
+            if self.current == "text" and self.latest:
+                self.now_caption.setText(f"LATEST · {clock(self.latest[0])}")
+                self.now_text.setText(f"… {self.latest[1]}")
+            else:
+                name = dict(LANES).get(self.current, "")
+                self.now_caption.setText(f"NOW · {name}".upper().strip(" ·"))
+                self.now_text.setText(self.status)
+            self.note.setText("Nothing leaves this Mac. Saved windows are reused when you resume.")
+        else:
+            self.crumb.setText("MEETINGS / NOT FINISHED")
+            self.now_caption.setText("PAUSED")
+            if text and not text["complete"] and text["total"]:
+                self.now_text.setText(
+                    f"{text['done']} of {text['total']} windows are saved. "
+                    f"Resume picks up at window {text['done'] + 1}."
+                )
+            else:
+                self.now_text.setText("Finished steps are saved and reused when you resume.")
+            self.note.setText("Nothing leaves this Mac. Completed work is reused when you resume.")
+        self.pause_button.setVisible(self.busy)
+        self.resume_card.setVisible(not self.busy)
+        self.add_speakers_button.setVisible(not self.busy and bool(self.cfg.get("asr_only")))
+        self.strip.setAccessibleName(self.describe())
+        self.strip.update()
+
+    def describe(self):
+        parts = []
+        for key, name in LANES:
+            lane = self.lanes.get(key)
+            if key in self.strip.skipped:
+                parts.append(f"{name}: not requested")
+            elif lane is None:
+                parts.append(f"{name}: waiting")
+            elif lane["complete"]:
+                parts.append(f"{name}: done")
+            elif lane["cells"]:
+                parts.append(f"{name}: {lane['done']} of {lane['total']}")
+            else:
+                parts.append(f"{name}: in progress")
+        return "Processing. " + "; ".join(parts) + "."
+
+
 # -- window ---------------------------------------------------------------------------------
 class Window(QMainWindow):
     def __init__(self, initial=None):
@@ -938,7 +1408,7 @@ class Window(QMainWindow):
         page.setContentsMargins(0, 0, 0, 0)
         page.setSpacing(0)
         page.addWidget(self.build_sidebar())
-        page.addLayout(self.build_main(), 1)
+        page.addWidget(self.build_main(), 1)
 
         for keys, handler in (
             ("Ctrl+Return", self.check_selected),
@@ -988,7 +1458,8 @@ class Window(QMainWindow):
         return side
 
     def build_main(self):
-        layout = QVBoxLayout()
+        review = QWidget()
+        layout = QVBoxLayout(review)
         layout.setContentsMargins(28, 18, 28, 12)
         layout.setSpacing(12)
 
@@ -1028,41 +1499,6 @@ class Window(QMainWindow):
         self.export_button.clicked.connect(self.export_file)
         header.addWidget(self.export_button)
         layout.addLayout(header)
-
-        # Shown only while processing runs.
-        self.run_card = QFrame()
-        self.run_card.setObjectName("card")
-        run = QHBoxLayout(self.run_card)
-        run.setContentsMargins(16, 12, 16, 12)
-        run.setSpacing(14)
-        run_text = QVBoxLayout()
-        run_text.setSpacing(6)
-        self.run_status = label("", 13, wrap=True)
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        run_text.addWidget(self.run_status)
-        run_text.addWidget(self.progress)
-        run.addLayout(run_text, 1)
-        self.pause_button = button("Pause")
-        self.pause_button.clicked.connect(self.process.terminate)
-        run.addWidget(self.pause_button)
-        layout.addWidget(self.run_card)
-
-        # Shown when a meeting has saved progress but no transcript yet.
-        self.resume_card = QFrame()
-        self.resume_card.setObjectName("card")
-        resume = QHBoxLayout(self.resume_card)
-        resume.setContentsMargins(16, 14, 16, 14)
-        resume.setSpacing(10)
-        self.resume_text = label("", 14, wrap=True)
-        resume.addWidget(self.resume_text, 1)
-        self.resume_button = button("Resume", "primary")
-        self.resume_button.clicked.connect(lambda: self.resume_job(False))
-        self.add_speakers_button = button("Add speakers")
-        self.add_speakers_button.clicked.connect(lambda: self.resume_job(True))
-        resume.addWidget(self.add_speakers_button)
-        resume.addWidget(self.resume_button)
-        layout.addWidget(self.resume_card)
 
         self.player_card = QFrame()
         self.player_card.setObjectName("card")
@@ -1125,7 +1561,20 @@ class Window(QMainWindow):
 
         self.footer = label(HINTS, 12, "muted")
         layout.addWidget(self.footer)
-        return layout
+
+        # While a meeting is processed, and when it stopped before its transcript was ready.
+        self.process_page = page = ProcessPage()
+        self.pause_button, self.resume_card = page.pause_button, page.resume_card
+        self.resume_button, self.add_speakers_button = page.resume_button, page.add_speakers_button
+        self.pause_button.clicked.connect(self.process.terminate)
+        self.resume_button.clicked.connect(lambda: self.resume_job(False))
+        self.add_speakers_button.clicked.connect(lambda: self.resume_job(True))
+        page.delete_button.clicked.connect(lambda: self.ask_delete(self.root))
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(review)
+        self.pages.addWidget(page)
+        return self.pages
 
     def notice(self, message):
         QMessageBox.information(self, "Meeting Protocol", str(message))
@@ -1206,7 +1655,7 @@ class Window(QMainWindow):
     def show_empty(self):
         self.title.setText("No meetings yet")
         self.meta.setText("Click + New to transcribe a recording.")
-        for widget in (self.player_card, self.heads, self.scroll, self.resume_card):
+        for widget in (self.player_card, self.heads, self.scroll):
             widget.hide()
         self.set_busy(self.is_busy())
 
@@ -1235,17 +1684,13 @@ class Window(QMainWindow):
         has_text = self.transcript is not None
         for widget in (self.player_card, self.heads, self.scroll):
             widget.setVisible(has_text)
-        self.resume_card.setVisible(not has_text)
         if not has_text:
             self.meta.setText("Processing has not finished.")
-            self.resume_text.setText(
-                "This meeting has saved progress. Resume to finish it; completed work is reused."
-            )
-            self.add_speakers_button.setVisible(bool(cfg.get("asr_only")))
+            if not self.is_busy():
+                self.process_page.restore(self.root)
             self.set_busy(self.is_busy())
             return
         speakers_missing = cfg.get("asr_only")
-        self.add_speakers_button.setVisible(False)
         for turn in self.transcript["turns"]:
             row = TurnRow(self, turn)
             row.clicked.connect(self.select_row)
@@ -1626,7 +2071,10 @@ class Window(QMainWindow):
 
     def set_busy(self, busy):
         has_text = self.transcript is not None
-        self.run_card.setVisible(busy)
+        unfinished = self.root is not None and not has_text
+        self.pages.setCurrentWidget(
+            self.process_page if busy or unfinished else self.pages.widget(0)
+        )
         self.new_button.setEnabled(not busy)
         self.job_list.setEnabled(not busy)
         self.resume_button.setEnabled(not busy)
@@ -1636,6 +2084,7 @@ class Window(QMainWindow):
         self.speakers_button.setEnabled(not busy and has_text)
         self.delete_button.setEnabled(not busy and self.root is not None)
         self.delete_button.setVisible(self.root is not None)
+        self.process_page.delete_button.setEnabled(not busy)
         self.scroll.setEnabled(not busy)
         self.pause_button.setEnabled(busy)
 
@@ -1655,8 +2104,10 @@ class Window(QMainWindow):
             return
         self.player.stop()
         self.pending, self.errors = "", ""
-        self.run_status.setText("Checking the recording and the local models…")
-        self.progress.setRange(0, 0)
+        if args[0] == "resume":
+            self.process_page.start(self.root, resuming=True)
+        else:
+            self.process_page.start(name=Path(args[1]).stem)
         self.set_busy(True)
         self.process.start(sys.executable, ["-m", "meeting_protocol.cli", *args])
 
@@ -1670,15 +2121,16 @@ class Window(QMainWindow):
                 event = json.loads(line)
             except ValueError:
                 continue
-            if "job" in event:
-                self.root = Path(event["job"])
-            if "stage" in event:
-                total = event.get("total", 0)
-                self.progress.setRange(0, total)
-                self.progress.setValue(event.get("done", 0))
-                stage = event["stage"].replace("_", " ").capitalize()
-                message = event.get("message", "")
-                self.run_status.setText(f"{stage} · {message}" if message else stage)
+            self.handle_event(event)
+
+    def handle_event(self, event):
+        if "job" in event:
+            self.root = Path(event["job"])
+            # Re-read even when resuming: adding speakers has just rewritten the settings.
+            self.process_page.load(self.root)
+            self.process_page.refresh()
+        if "stage" in event:
+            self.process_page.apply(event)
 
     def receive_errors(self):
         self.errors = (
@@ -1689,6 +2141,7 @@ class Window(QMainWindow):
     def finished(self, code, status):
         self.receive()
         self.receive_errors()
+        self.process_page.stop()
         root = self.root
         self.root = None
         self.refresh_jobs()

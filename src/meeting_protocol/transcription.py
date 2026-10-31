@@ -83,7 +83,22 @@ def run(store, config, progress):
 
             cached = json.loads(json.dumps(cached, default=lambda x: x.item()))
             store.put_json(key, cached, "transcription", elapsed)
-        progress("transcription", index + 1, len(parts), "Window saved")
+        latest = next((s for s in reversed(cached["segments"]) if s["text"].strip()), None)
+        progress(
+            "transcription",
+            index + 1,
+            len(parts),
+            "Window saved",
+            at=window["end"] / RATE,
+            **(
+                {
+                    "latest": latest["text"].strip(),
+                    "latest_at": window["read_start"] / RATE + latest["start"],
+                }
+                if latest
+                else {}
+            ),
+        )
         result.append(cached)
     return result
 

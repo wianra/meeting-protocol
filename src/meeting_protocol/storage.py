@@ -147,6 +147,14 @@ class Store:
         """Every (speaker_id, name) in order; the last name for a speaker is current."""
         return list(self.db.execute("SELECT speaker_id,name FROM speaker_names ORDER BY id"))
 
+    def latest_events(self) -> dict:
+        """The last (done, total, message) recorded for each stage."""
+        rows = self.db.execute(
+            "SELECT stage,done,total,message FROM events WHERE id IN "
+            "(SELECT MAX(id) FROM events GROUP BY stage) ORDER BY id"
+        )
+        return {stage: (done, total, message) for stage, done, total, message in rows}
+
     def summary(self):
         last = self.db.execute(
             "SELECT stage,done,total,message FROM events ORDER BY id DESC LIMIT 1"
