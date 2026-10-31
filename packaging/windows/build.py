@@ -9,6 +9,7 @@ runtime; the speech model downloads on first launch. Packages the last commit (H
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -156,7 +157,8 @@ def prune_qt(site: Path):
 
 def main():
     os.chdir(ROOT)
-    version = output("git", "show", "HEAD:src/meeting_protocol/__init__.py").split('"')[1]
+    init = output("git", "show", "HEAD:src/meeting_protocol/__init__.py")
+    version = re.search(r'^__version__ = "([^"]+)"', init, re.MULTILINE).group(1)
     shutil.rmtree(APP, ignore_errors=True)
     BUILD.mkdir(parents=True, exist_ok=True)
 
