@@ -10,7 +10,7 @@ Requires a Mac with Apple Silicon (M1 or later) and macOS 14 or later, plus abou
 
 1. Download **MeetingProtocol-…-arm64.dmg** from the [latest release](https://github.com/wianra/meeting-protocol/releases/latest).
 2. Open it and drag **Meeting Protocol** onto **Applications**.
-3. Open Meeting Protocol from Applications. The first time, macOS says it cannot verify the app, because it is not yet signed by a registered Apple developer. Click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Meeting Protocol, then confirm. This is needed only once.
+3. Open Meeting Protocol from Applications. The first time, macOS says *“Apple could not verify ‘Meeting Protocol’ is free of malware…”*, because the app is not yet signed by a registered Apple developer. Click **Done** (not Move to Trash), open **System Settings → Privacy & Security**, scroll down to **Security** and click **Open Anyway** next to Meeting Protocol, then confirm. This is needed only once. If the button is missing, open the app once more and check again.
 4. Click **Download** to fetch the speech model (3.1 GB, one time). Everything after that runs offline.
 
 No Python, Homebrew, FFmpeg or Hugging Face account is needed. Meetings and models are stored in `~/Library/Application Support/Meeting Protocol`. To uninstall, delete the app and that folder.

@@ -22,6 +22,8 @@ from ..privacy import home
 from .common import ICON, set_app_icon
 from .main import STYLE, button, font, label
 
+WIDTH = 520
+
 
 def folder_bytes(path):
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) if path.exists() else 0
@@ -38,7 +40,7 @@ class Setup(QWidget):
         self.errors = ""
         self.setObjectName("main")
         self.setWindowTitle("Meeting Protocol")
-        self.setFixedWidth(520)
+        self.setFixedWidth(WIDTH)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 26, 28, 22)
         layout.setSpacing(14)
@@ -67,7 +69,9 @@ class Setup(QWidget):
         self.progress.hide()
         layout.addWidget(self.progress)
         self.status = label("", 13, "muted", wrap=True)
+        self.status.hide()
         layout.addWidget(self.status)
+        layout.addSpacing(6)
         actions = QHBoxLayout()
         actions.addStretch()
         self.quit_button = button("Quit")
@@ -83,13 +87,20 @@ class Setup(QWidget):
         self.process.finished.connect(self.finished)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
+        self.fit()
+
+    def fit(self):
+        # Wrapped labels make Qt overestimate the height; size to the content at this width.
+        self.setFixedHeight(self.layout().totalHeightForWidth(WIDTH))
 
     def start(self):
         self.errors = ""
         self.start_button.setEnabled(False)
         self.start_button.setText("Downloading…")
         self.progress.show()
+        self.status.show()
         self.status.setText("Starting the download…")
+        self.fit()
         self.process.start(
             sys.executable, ["-m", "meeting_protocol.cli", "provision", "asr", "--tested"]
         )
@@ -119,6 +130,7 @@ class Setup(QWidget):
         self.status.setText(
             f"{last[0]}\nCheck the internet connection and try again. Finished parts are kept."
         )
+        self.fit()
 
     def closeEvent(self, event):
         if self.process.state() != QProcess.ProcessState.NotRunning:
