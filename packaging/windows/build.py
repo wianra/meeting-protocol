@@ -201,7 +201,8 @@ def main():
 
     print("==> Trim")
     prune_qt(site)
-    for name in ["torch/include", "torch/share", "torch/test"]:
+    # onnxruntime/tools is model-conversion tooling with paths too long for Explorer.
+    for name in ["torch/include", "torch/share", "torch/test", "onnxruntime/tools"]:
         shutil.rmtree(site / name, ignore_errors=True)
     for path in [*site.rglob("*.lib"), *site.rglob("*.pyi"), *APP.rglob("*.pdb")]:
         path.unlink()
@@ -299,7 +300,8 @@ def main():
     print("==> Zip")
     too_long = [p for p in APP.rglob("*") if len(str(p.relative_to(APP.parent))) > MAX_PATH_IN_ZIP]
     if too_long:
-        sys.exit(f"{len(too_long)} paths are too long for Explorer, e.g. {too_long[0]}")
+        print(*too_long, sep="\n")
+        sys.exit(f"{len(too_long)} paths are too long for Explorer")
     target = ROOT / "dist" / f"MeetingProtocol-{version}-windows-x64.zip"
     target.unlink(missing_ok=True)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
