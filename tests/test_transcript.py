@@ -16,15 +16,9 @@ def test_exact_plain_export_no_metadata_and_merge_adjacent():
         {"speaker": "Speaker B", "text": "Oui.", "start": 3},
         {"speaker": "Speaker A", "text": "Danke.", "start": 4},
     ]
-    result = plain_text(turns)
-    assert (
-        result
-        == 'Speaker A: "Hallo. Er sagte \\"ja\\". Noch etwas."\nSpeaker B: "Oui."\nSpeaker A: "Danke."\n'.replace(
-            '\\\\"', '\\"'
-        )
+    assert plain_text(turns) == (
+        'Speaker A: Hallo. Er sagte "ja". Noch etwas.\nSpeaker B: Oui.\nSpeaker A: Danke.\n'
     )
-    for line in result.splitlines():
-        assert isinstance(json.loads(line.split(": ", 1)[1]), str)
 
 
 def test_invalid_speaker_label_cannot_inject_extra_lines():
@@ -160,11 +154,106 @@ def test_export_versions_preserve_previous_text(tmp_path):
     second = export_transcript(store, raw)
     assert first["revision"] != second["revision"]
     previous = tmp_path / "exports" / "revisions" / first["revision"] / "transcript.txt"
-    assert '"Original"' in previous.read_text()
-    assert '"Corrected"' in (tmp_path / "exports/transcript.txt").read_text()
+    assert previous.read_text() == "Speaker A: Original\n"
+    assert (tmp_path / "exports/transcript.txt").read_text() == "Speaker B: Corrected\n"
     assert second["speakers"][0]["label"] == "Speaker B"
     assert (
         json.loads((tmp_path / "exports/current.json").read_text())["revision"]
         == second["revision"]
     )
+    store.close()
+
+
+def named_fixture():
+    turn = {"reviewed": False, "flags": [], "language": "de", "words": [{"text": "x"}], "end": 9}
+    return {
+        "job_id": "test",
+        "diarized": True,
+        "issues": [],
+        "speakers": [{"id": "a", "label": "Speaker A"}, {"id": "b", "label": "Speaker B"}],
+        "turns": [
+            {
+                **turn,
+                "id": "1",
+                "speaker": "Speaker A",
+                "speaker_id": "a",
+                "text": "Hi.",
+                "start": 0,
+            },
+            {
+                **turn,
+                "id": "2",
+                "speaker": "Speaker B",
+                "speaker_id": "b",
+                "text": "Hey.",
+                "start": 1,
+            },
+            {
+                **turn,
+                "id": "3",
+                "speaker": "Speaker B",
+                "speaker_id": "b",
+                "text": "Ok.",
+                "start": 2,
+            },
+        ],
+    }
+
+
+def test_renamed_speaker_appears_in_every_turn_and_export(tmp_path):
+    from meeting_protocol.export import export_transcript, rename_speakers
+    from meeting_protocol.storage import Store
+
+    store = Store(tmp_path)
+    raw = named_fixture()
+    rename_speakers(store, raw, {"Speaker B": "Raphael Winkler"})
+    result = export_transcript(store, raw)
+    assert [t["speaker"] for t in result["turns"]] == ["Speaker A", "Raphael Winkler"] * 1 + [
+        "Raphael Winkler"
+    ]
+    assert {"id": "b", "label": "Raphael Winkler"} in result["speakers"]
+    # A rename is not a text correction: word alignment and review state stay.
+    assert all(t["words"] and not t["reviewed"] for t in result["turns"])
+    assert (tmp_path / "exports/transcript.txt").read_text() == (
+        "Speaker A: Hi.\nRaphael Winkler: Hey. Ok.\n"
+    )
+    store.close()
+
+
+def test_rename_follows_speaker_through_later_corrections(tmp_path):
+    from meeting_protocol.export import corrected, rename_speakers
+    from meeting_protocol.storage import Store
+
+    store = Store(tmp_path)
+    raw = named_fixture()
+    rename_speakers(store, raw, {"Speaker B": "Raphael"})
+    store.correction("1", "Hi.", "Raphael", False)
+    rename_speakers(store, raw, {"Raphael": "Raphael Winkler"})
+    assert {t["speaker"] for t in corrected(store, raw)["turns"]} == {"Raphael Winkler"}
+    store.close()
+
+
+def test_renames_in_one_step_do_not_chain(tmp_path):
+    from meeting_protocol.export import corrected, rename_speakers
+    from meeting_protocol.storage import Store
+
+    store = Store(tmp_path)
+    raw = named_fixture()
+    rename_speakers(store, raw, {"Speaker A": "Speaker B", "Speaker B": "Anna"})
+    assert [t["speaker"] for t in corrected(store, raw)["turns"]] == ["Speaker B", "Anna", "Anna"]
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [("Speaker A", "Bad: name"), ("Speaker A", ""), ("Speaker Unknown", "X"), ("Nobody", "X")],
+)
+def test_invalid_renames_are_rejected(tmp_path, old, new):
+    from meeting_protocol.export import rename_speakers
+    from meeting_protocol.storage import Store
+
+    store = Store(tmp_path)
+    with pytest.raises(ValueError):
+        rename_speakers(store, named_fixture(), {old: new})
+    assert store.speaker_names() == []
     store.close()

@@ -2,7 +2,6 @@
 
 import copy
 import html
-import json
 import re
 import uuid
 from pathlib import Path
@@ -35,14 +34,22 @@ def describe_flags(flags):
     return " · ".join(FLAG_LABELS.get(flag, flag.replace("_", " ")) for flag in flags)
 
 
-def apply_corrections(transcript, corrections):
+def apply_corrections(transcript, corrections, names=()):
+    """Per-turn corrections, then speaker names, which follow the speaker ID, not the label.
+
+    `names` is the (speaker_id, name) history; the last name for each speaker is current.
+    """
     result = copy.deepcopy(transcript)
+    # A corrected label may be an original label or any name given since, newest first.
+    known = {s["label"]: s["id"] for s in result.get("speakers", [])}
+    for speaker_id, name in reversed(names):
+        known.setdefault(name, speaker_id)
+    names = dict(names)
     for turn in result["turns"]:
         if turn["id"] in corrections:
             update = corrections[turn["id"]]
             turn.update(update)
             if "job_id" in result:
-                known = {s["label"]: s["id"] for s in result.get("speakers", [])}
                 turn["speaker_id"] = known.get(
                     turn["speaker"],
                     str(
@@ -60,15 +67,49 @@ def apply_corrections(transcript, corrections):
             if turn.get("speaker_id") and turn["speaker_id"] not in seen:
                 result["speakers"].append({"id": turn["speaker_id"], "label": turn["speaker"]})
                 seen.add(turn["speaker_id"])
+        for speaker in result["speakers"]:
+            speaker["label"] = names.get(speaker["id"], speaker["label"])
+    for turn in result["turns"]:
+        turn["speaker"] = names.get(turn.get("speaker_id"), turn["speaker"])
     return result
+
+
+def corrected(store, transcript):
+    return apply_corrections(transcript, store.corrections(), store.speaker_names())
+
+
+def check_label(label):
+    if not label or any(c in label for c in '\n\r:"'):
+        raise ValueError("Speaker labels must be a single line without quotes or colons.")
+
+
+def rename_speakers(store, transcript, names):
+    """Name every turn labelled with each `{current label: name}`. A shared name merges them.
+
+    All labels are resolved before any is saved, so swapping or chaining names is safe.
+    """
+    turns = corrected(store, transcript)["turns"]
+    resolved = []
+    for old, new in names.items():
+        old, new = old.strip(), new.strip()
+        check_label(new)
+        if old == "Speaker Unknown":
+            raise ValueError("Assign unknown turns one by one; they may be different people.")
+        ids = {t["speaker_id"] for t in turns if t["speaker"] == old}
+        if not ids:
+            raise ValueError(f"No speaker is labelled {old!r}.")
+        if None in ids:
+            raise ValueError(f"{old!r} has no speaker identity to rename; correct its turns.")
+        resolved.append((sorted(ids), new))
+    for ids, new in resolved:
+        store.rename_speaker(ids, new)
 
 
 def merged_turns(turns):
     merged = []
     for turn in turns:
         label = turn["speaker"].strip()
-        if not label or any(c in label for c in '\n\r:"'):
-            raise ValueError("Speaker labels must be a single line without quotes or colons.")
+        check_label(label)
         text = re.sub(r"\s+", " ", turn["text"]).strip()
         if merged and merged[-1][0] == label:
             merged[-1][1] += " " + text
@@ -78,9 +119,7 @@ def merged_turns(turns):
 
 
 def plain_text(turns):
-    return "".join(
-        f"{label}: {json.dumps(text, ensure_ascii=False)}\n" for label, text in merged_turns(turns)
-    )
+    return "".join(f"{label}: {text}\n" for label, text in merged_turns(turns))
 
 
 def render_html(transcript):
@@ -115,7 +154,7 @@ def render_html(transcript):
 
 
 def export_transcript(store, transcript):
-    result = apply_corrections(transcript, store.corrections())
+    result = corrected(store, transcript)
     result["review_status"] = (
         "reviewed"
         if (
@@ -124,7 +163,7 @@ def export_transcript(store, transcript):
         else "draft"
     )
     folder = store.root / "exports"
-    revision = fingerprint({"transcript": result, "export_format_version": 2})[:16]
+    revision = fingerprint({"transcript": result, "export_format_version": 3})[:16]
     result["revision"] = revision
     outputs = {
         "transcript.txt": plain_text(result["turns"]).encode(),

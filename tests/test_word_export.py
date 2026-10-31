@@ -24,8 +24,8 @@ def test_word_preserves_multilingual_text_and_has_no_private_metadata():
     ]
     doc = word_document(merged_turns(turns))
     assert paragraphs(doc) == [
-        'Speaker A: "Grüezi & bienvenue. Er sagte "ja". Encore une chose."',
-        'Speaker B: "È già pronto <oggi>."',
+        'Speaker A: Grüezi & bienvenue. Er sagte "ja". Encore une chose.',
+        "Speaker B: È già pronto <oggi>.",
     ]
     with ZipFile(io.BytesIO(doc)) as archive:
         assert "docProps/core.xml" not in archive.namelist()
@@ -69,8 +69,8 @@ def test_save_as_uses_latest_correction_without_changing_old_revision(tmp_path):
     first = export_to_file(store, raw, tmp_path / "before.docx")
     store.correction("one", "Korrigiert", "Speaker B", True)
     second = export_to_file(store, raw, tmp_path / "after.docx")
-    assert paragraphs((tmp_path / "before.docx").read_bytes()) == ['Speaker A: "Original"']
-    assert paragraphs((tmp_path / "after.docx").read_bytes()) == ['Speaker B: "Korrigiert"']
+    assert paragraphs((tmp_path / "before.docx").read_bytes()) == ["Speaker A: Original"]
+    assert paragraphs((tmp_path / "after.docx").read_bytes()) == ["Speaker B: Korrigiert"]
     assert first["revision"] != second["revision"]
     saved = json.loads((store.root / "exports/transcript.json").read_text())
     assert saved["turns"][0]["reviewed"] is True

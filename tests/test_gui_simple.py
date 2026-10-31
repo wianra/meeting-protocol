@@ -95,5 +95,5 @@ def test_simple_window_edits_reviews_and_exports(tmp_path, monkeypatch):
 
     window.export_as(".txt")
     plain = destination.with_suffix(".txt").read_text()
-    assert 'Speaker A: "Human correction' in plain
+    assert "Speaker A: Human correction" in plain
     window.close()

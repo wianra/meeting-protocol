@@ -80,6 +80,9 @@ class Store:
             id INTEGER PRIMARY KEY, turn_id TEXT, text TEXT, speaker TEXT,
             reviewed INTEGER, created REAL
           );
+          CREATE TABLE IF NOT EXISTS speaker_names (
+            id INTEGER PRIMARY KEY, speaker_id TEXT, name TEXT, created REAL
+          );
         """)
 
     def close(self):
@@ -132,6 +135,17 @@ class Store:
                 "SELECT turn_id,text,speaker,reviewed FROM corrections ORDER BY id"
             )
         }
+
+    def rename_speaker(self, speaker_ids, name: str):
+        with self.db:
+            self.db.executemany(
+                "INSERT INTO speaker_names(speaker_id,name,created) VALUES(?,?,?)",
+                [(speaker_id, name, time.time()) for speaker_id in speaker_ids],
+            )
+
+    def speaker_names(self) -> list:
+        """Every (speaker_id, name) in order; the last name for a speaker is current."""
+        return list(self.db.execute("SELECT speaker_id,name FROM speaker_names ORDER BY id"))
 
     def summary(self):
         last = self.db.execute(

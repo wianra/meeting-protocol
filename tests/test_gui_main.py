@@ -197,3 +197,41 @@ def test_trash_job_refuses_while_a_worker_holds_the_job(tmp_path):
     with lock(root / ".worker.lock"), pytest.raises(RuntimeError):
         trash_job(root)
     assert root.exists()
+
+
+def test_main_window_names_speakers_in_every_turn_and_export(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    from meeting_protocol.gui import main
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    root = make_job(tmp_path)
+    raw = json.loads((root / "transcript.raw.json").read_text())
+    raw["speakers"] = [{"id": "a", "label": "Speaker A"}, {"id": "b", "label": "Speaker B"}]
+    for turn in raw["turns"]:
+        turn["speaker_id"] = "b" if turn["speaker"] == "Speaker B" else "a"
+    (root / "transcript.raw.json").write_text(json.dumps(raw))
+    app = QApplication.instance() or QApplication([])
+    window = main.Window(str(root))
+
+    def name_them(dialog):
+        dialog.fields["Speaker A"].setText("Raphael Winkler")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(main.SpeakersDialog, "exec", name_them)
+    window.speakers_button.click()
+    app.processEvents()
+    assert [r.name.text() for r in window.rows] == [
+        "Raphael Winkler",
+        "Speaker B",
+        "Raphael Winkler",
+    ]
+    assert (root / "exports/transcript.txt").read_text() == (
+        "Raphael Winkler: Invented sentence 0\n"
+        "Speaker B: Invented sentence 1\n"
+        "Raphael Winkler: Invented sentence 2\n"
+    )
+    # The name survives reopening the meeting.
+    window.open_job(root)
+    assert window.rows[0].name.text() == "Raphael Winkler"
+    window.close()

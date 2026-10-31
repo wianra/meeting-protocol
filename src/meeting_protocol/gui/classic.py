@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..export import apply_corrections, describe_flags, export_to_file, export_transcript
+from ..export import corrected, describe_flags, export_to_file, export_transcript
 from ..jobs import read_config, resolve_job
 from ..privacy import home, require_offline
 from ..storage import Store, lock
@@ -299,9 +299,7 @@ class Window(QMainWindow):
         if raw.exists():
             store = Store(root)
             try:
-                self.transcript = apply_corrections(
-                    json.loads(raw.read_text()), store.corrections()
-                )
+                self.transcript = corrected(store, json.loads(raw.read_text()))
             finally:
                 store.close()
             self.table.setRowCount(len(self.transcript["turns"]))

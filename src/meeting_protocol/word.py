@@ -27,7 +27,7 @@ def word_document(turns):
             '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">'
             + text_xml(speaker + ": ")
             + '</w:t></w:r><w:r><w:t xml:space="preserve">'
-            + text_xml('"' + text + '"')
+            + text_xml(text)
             + "</w:t></w:r></w:p>"
         )
     parts = {

@@ -49,7 +49,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..export import apply_corrections, describe_flags, export_to_file, export_transcript
+from ..export import (
+    corrected,
+    describe_flags,
+    export_to_file,
+    export_transcript,
+    rename_speakers,
+)
 from ..jobs import read_config, resolve_job
 from ..privacy import home, require_offline
 from ..storage import Store, lock
@@ -193,7 +199,7 @@ def load_transcript(root):
         return None
     store = Store(root)
     try:
-        return apply_corrections(json.loads(raw.read_text()), store.corrections())
+        return corrected(store, json.loads(raw.read_text()))
     finally:
         store.close()
 
@@ -720,6 +726,58 @@ class DeleteDialog(QDialog):
         layout.addLayout(actions)
 
 
+class SpeakersDialog(QDialog):
+    """Names for the meeting's speakers; a name replaces the label in every turn and export."""
+
+    def __init__(self, parent, labels):
+        super().__init__(parent)
+        self.setWindowTitle("Speakers")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 18)
+        layout.setSpacing(12)
+        layout.addWidget(label("Name the speakers", 18, weight=QFont.Weight.Bold))
+        layout.addWidget(
+            label(
+                "Each name replaces the label throughout this meeting. Giving two speakers "
+                "the same name merges them.",
+                13,
+                "muted",
+                wrap=True,
+            )
+        )
+        self.fields = {}
+        for name in labels:
+            line = QHBoxLayout()
+            current = label(name, 13)
+            current.setFixedWidth(130)
+            line.addWidget(current)
+            field = QLineEdit(name)
+            field.setAccessibleName(f"Name for {name}")
+            line.addWidget(field, 1)
+            layout.addLayout(line)
+            self.fields[name] = field
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 6, 0, 0)
+        actions.addStretch()
+        cancel = button("Cancel")
+        cancel.clicked.connect(self.reject)
+        save = button("Save names", "primary")
+        save.clicked.connect(self.accept)
+        actions.addWidget(cancel)
+        actions.addWidget(save)
+        save.setDefault(True)
+        layout.addLayout(actions)
+
+    def changes(self):
+        return {
+            old: field.text().strip()
+            for old, field in self.fields.items()
+            if field.text().strip() != old
+        }
+
+
 class Toast(QFrame):
     """Bottom-centre notice with Undo; hides itself after a few seconds."""
 
@@ -957,6 +1015,9 @@ class Window(QMainWindow):
         self.show_check.clicked.connect(lambda: self.set_filter(True))
         header.addLayout(seg)
         header.addSpacing(4)
+        self.speakers_button = button("Speakers…", tip="Replace Speaker A, B… with names")
+        self.speakers_button.clicked.connect(self.rename_speakers)
+        header.addWidget(self.speakers_button)
         self.folder_button = button("Open folder")
         self.folder_button.clicked.connect(self.open_export_folder)
         header.addWidget(self.folder_button)
@@ -1336,15 +1397,37 @@ class Window(QMainWindow):
             return False
         finally:
             store.close()
-        by_id = {turn["id"]: turn for turn in self.transcript["turns"]}
         row.dirty = False
+        self.reload_rows()
+        return True
+
+    def rename_speakers(self):
+        if not self.root or self.transcript is None or not self.save_selected():
+            return
+        dialog = SpeakersDialog(self, self.speaker_labels()[:-1])
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.changes():
+            return
+        store = Store(self.root)
+        try:
+            with lock(self.root / ".lock"):
+                raw = json.loads((self.root / "transcript.raw.json").read_text())
+                rename_speakers(store, raw, dialog.changes())
+                self.transcript = export_transcript(store, raw)
+        except Exception as exc:  # noqa: BLE001 -- invalid name or storage error.
+            self.notice(exc)
+            return
+        finally:
+            store.close()
+        self.reload_rows()
+
+    def reload_rows(self):
+        by_id = {turn["id"]: turn for turn in self.transcript["turns"]}
         for each in self.rows:
             each.turn = by_id.get(each.turn["id"], each.turn)
             each.refresh()
         self.wave.set_data(self.wave.levels, self.spans(), self.duration)
         self.update_job_item()
         self.update_view()
-        return True
 
     # -- audio -----------------------------------------------------------------------------
     def toggle_play(self):
@@ -1550,6 +1633,7 @@ class Window(QMainWindow):
         self.add_speakers_button.setEnabled(not busy)
         self.export_button.setEnabled(not busy and has_text)
         self.folder_button.setEnabled(not busy and has_text)
+        self.speakers_button.setEnabled(not busy and has_text)
         self.delete_button.setEnabled(not busy and self.root is not None)
         self.delete_button.setVisible(self.root is not None)
         self.scroll.setEnabled(not busy)

@@ -31,13 +31,15 @@ Choose a local recording, set the speaker range if known, and click **Transcribe
 
 Speaker A/B labels are anonymous, consistent within the inferred meeting-wide clustering. They are not real-person identification. Uncertain words, overlaps and speaker transitions are flagged for listening. If a speaker cannot be assigned, a draft uses **Speaker Unknown**; assign it during review. The app never invents an identity to make the output look complete.
 
+To use real names, click **Speakers…** and type a name next to each label, for example `Raphael Winkler` for Speaker A. The name replaces the label in every turn and in all exports, so the output reads `Raphael Winkler: I am great.` Giving two speakers the same name merges them. Unknown turns are assigned one by one.
+
 ### Delete a meeting
 
 Hover a meeting in the sidebar, or open it, and click the bin icon (also next to **Open folder**). After you confirm, the meeting's folder — transcript, corrections, checkpoints and saved exports — moves to the macOS Trash, and **Undo** appears for a few seconds. Afterwards you can still use **Put Back** in the Trash. The original recording and files you exported elsewhere are never touched. Deleting is unavailable while processing runs, and a job that a terminal `./diarize` command is still using refuses to move.
 
 ### Export your corrected transcript
 
-Click **Export…** below the transcript and choose **Word document (.docx)**, plain text, review HTML or structured JSON. Select the destination in the Save dialog. Any pending editor correction is saved before export. The Word file contains bold speaker labels and quoted paragraphs, with no timestamps, confidence labels or additional commentary.
+Click **Export…** below the transcript and choose **Word document (.docx)**, plain text, review HTML or structured JSON. Select the destination in the Save dialog. Any pending editor correction is saved before export. The Word file contains bold speaker labels followed by the text, with no timestamps, confidence labels or additional commentary.
 
 **Open export folder** opens the meeting's saved outputs in Finder. Every saved correction updates `transcript.docx`, `transcript.txt`, `transcript.json` and `review.html`; previous revisions remain available. The exports always use the saved correction history, without rerunning transcription. To see these buttons after updating an already running app, save your edit and restart the app.
 
@@ -66,6 +68,10 @@ Click **Export…** below the transcript and choose **Word document (.docx)**, p
 
 # Rebuild exports from saved text and corrections
 ./diarize export JOB_ID
+
+# List the speakers, then replace a label with a name in every turn and export
+./diarize rename JOB_ID
+./diarize rename JOB_ID "Speaker A" "Raphael Winkler"
 
 # Save a corrected Word document to a chosen local destination
 ./diarize export JOB_ID --output /absolute/path/to/meeting-transcript.docx
@@ -106,12 +112,12 @@ Each job contains:
 The required plain export has exactly this structure, with no heading or timestamps:
 
 ```text
-Speaker A: "Wir beginnen mit dem ersten Punkt."
-Speaker B: "Oui, je peux présenter les résultats."
-Speaker A: "Danke."
+Speaker A: Wir beginnen mit dem ersten Punkt.
+Speaker B: Oui, je peux présenter les résultats.
+Speaker A: Danke.
 ```
 
-Adjacent fragments from the same speaker are merged. Embedded quotation marks are escaped; internal line breaks become spaces. Draft/review information lives in the JSON and HTML companions. The latest immutable version is identified by `exports/current.json`; the top-level files are convenience copies.
+Adjacent fragments from the same speaker are merged. Turn text is written as spoken, without surrounding quotes; internal line breaks become spaces. Draft/review information lives in the JSON and HTML companions. The latest immutable version is identified by `exports/current.json`; the top-level files are convenience copies.
 
 ## Privacy
 

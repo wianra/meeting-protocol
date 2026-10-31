@@ -49,6 +49,10 @@ def parser():
     export = sub.add_parser("export", help="Regenerate exports with saved corrections")
     export.add_argument("job")
     export.add_argument("--output", type=Path, help="Save corrected .docx, .txt, .json or .html")
+    rename = sub.add_parser("rename", help="Name a speaker throughout a meeting, e.g. Speaker A")
+    rename.add_argument("job")
+    rename.add_argument("old", nargs="?", help="Current label; omit to list the speakers")
+    rename.add_argument("new", nargs="?", help="New name")
     worker = sub.add_parser("_worker", help=argparse.SUPPRESS)
     worker.add_argument("job")
     worker.add_argument("stage")
@@ -155,7 +159,7 @@ def main():
             from .jobs import resolve_job, worker
 
             worker(resolve_job(args.job), args.stage)
-        elif args.command in ("status", "export"):
+        elif args.command in ("status", "export", "rename"):
             from .jobs import resolve_job
             from .storage import Store, lock
 
@@ -164,6 +168,22 @@ def main():
             try:
                 if args.command == "status":
                     print(json.dumps(store.summary(), indent=2))
+                elif args.command == "rename":
+                    from .export import corrected, export_transcript, rename_speakers
+
+                    with lock(root / ".lock"):
+                        raw = json.loads((root / "transcript.raw.json").read_text())
+                        if args.old is None:
+                            labels = dict.fromkeys(
+                                t["speaker"] for t in corrected(store, raw)["turns"]
+                            )
+                            print("\n".join(labels))
+                        elif args.new is None:
+                            raise ValueError("Give both the current label and the new name.")
+                        else:
+                            rename_speakers(store, raw, {args.old: args.new})
+                            export_transcript(store, raw)
+                            print(str(root / "exports"))
                 else:
                     from .export import export_to_file, export_transcript
 
