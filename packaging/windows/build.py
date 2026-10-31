@@ -237,10 +237,9 @@ def main():
         env=env,
     )
     numbers = ",".join((version.split(".") + ["0", "0", "0"])[:4])
-    (BUILD / "version.h").write_text(
-        f'#define VERSION_COMMAS {numbers}\n#define VERSION_TEXT "{version}"\n'
-    )
-    run("rc", "/nologo", "/i", BUILD, "/fo", BUILD / "app.res", HERE / "app.rc")
+    rc = (HERE / "app.rc").read_text().replace("VERSION_COMMAS", numbers)
+    (BUILD / "app.rc").write_text(rc.replace("VERSION_TEXT", f'"{version}"'))
+    run("rc", "/nologo", "/fo", BUILD / "app.res", BUILD / "app.rc")
     exe = APP / "Meeting Protocol.exe"
     run(
         "cl",

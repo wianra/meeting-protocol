@@ -1,5 +1,4 @@
 #include <winver.h>
-#include "version.h"
 
 1 ICON "app.ico"
 
