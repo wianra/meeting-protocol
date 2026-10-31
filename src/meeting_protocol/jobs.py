@@ -11,11 +11,16 @@ from importlib.metadata import version
 from pathlib import Path
 
 from .audio import inspect_audio
-from .models import model_info
+from .compat import WorkerGroup
+from .models import asr_backend, model_info
 from .privacy import home, require_offline
 from .storage import Store, atomic_write, canonical, digest_file, fingerprint, lock
 
-RUNTIME_PACKAGES = ("mlx", "mlx-whisper", "pyannote-audio", "torch", "numpy")
+RUNTIME_PACKAGES = (
+    ("mlx", "mlx-whisper", "pyannote-audio", "torch", "numpy")
+    if asr_backend() == "mlx"
+    else ("faster-whisper", "ctranslate2", "pyannote-audio", "torch", "numpy")
+)
 
 
 def runtime_versions():
@@ -116,12 +121,14 @@ def run_job(root: Path, *, add_speakers=False):
             stages.append("diarization")
         stages.append("export")
         print(json.dumps({"job": str(root), "status": "running"}), flush=True)
+        group = WorkerGroup()
         for stage in stages:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "meeting_protocol.cli", "_worker", str(root), stage],
-                start_new_session=True,
                 env={**os.environ, "DIARIZE_PARENT_PID": str(os.getpid())},
+                **group.popen_args(),
             )
+            group.add(proc)
             try:
                 if proc.wait() != 0:
                     raise RuntimeError(
@@ -146,7 +153,8 @@ def run_job(root: Path, *, add_speakers=False):
 def worker(root: Path, stage: str):
     require_offline()
     expected_parent = os.environ.get("DIARIZE_PARENT_PID")
-    if expected_parent:
+    # Windows never reparents; there the supervisor's job object ends workers instead.
+    if expected_parent and sys.platform != "win32":
 
         def watch_parent():
             while True:

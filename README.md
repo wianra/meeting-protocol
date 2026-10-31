@@ -15,6 +15,12 @@ Requires a Mac with Apple Silicon (M1 or later) and macOS 14 or later, plus abou
 
 No Python, Homebrew, FFmpeg or Hugging Face account is needed. Meetings and models are stored in `~/Library/Application Support/Meeting Protocol`. To uninstall, delete the app and that folder.
 
+## Windows (test build)
+
+A Windows 10/11 (64-bit) test build is on the [windows-test pre-release](https://github.com/wianra/meeting-protocol/releases/tag/windows-test). Download the zip, right-click it → **Extract All**, open the extracted **MeetingProtocol** folder and double-click **Meeting Protocol.exe**. If Windows shows "Windows protected your PC", click **More info → Run anyway** (the app is not signed yet). The first launch downloads the speech model (3.1 GB); meetings are stored in `%LOCALAPPDATA%\Meeting Protocol`.
+
+Differences from the Mac app: transcription runs on the CPU with faster-whisper, so expect roughly one to two times the meeting length; and networking is blocked by the app itself, not by the operating system (see Privacy).
+
 ## Open the app from source
 
 From this folder:
@@ -126,6 +132,8 @@ Audio processing, review, status and export run inside a **macOS sandbox that de
 Only `login` and `provision` use network access. They authenticate and download model files; those command paths do not read recordings. Credentials are stored locally under `.local/huggingface/` and are not written into jobs. Processing logs report stages and counts rather than transcript text.
 
 The application cannot control system backups or another program's folder synchronisation. Keep the project/data directory outside iCloud, Dropbox or similar synced locations. To choose a different local data directory, set `DIARIZE_HOME` before every invocation, including provisioning. Changing it does not automatically move existing models or jobs.
+
+On Windows there is no equivalent sandbox. There the app blocks networking itself: every Python socket connection and name lookup is refused in each processing process. That covers the model libraries' Python code but is weaker than the macOS sandbox, which the operating system enforces; `doctor` reports `network_isolation: app-level` on Windows.
 
 The current Mac launcher relies on `/usr/bin/sandbox-exec`. It fails closed if the sandbox cannot be started. When launching from an already sandboxed development tool, an outer permission escalation may be needed to start the application's own sandbox; the audio worker itself still has networking denied.
 

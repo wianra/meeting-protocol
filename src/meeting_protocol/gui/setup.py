@@ -17,9 +17,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..compat import stop_supervisor
 from ..models import ASR_BYTES
 from ..privacy import home
-from .common import ICON, set_app_icon
+from .common import DEVICE, ICON, set_app_icon
 from .main import STYLE, button, font, label
 
 WIDTH = 520
@@ -54,9 +55,9 @@ class Setup(QWidget):
         intro.addWidget(label("Set up Meeting Protocol", 20, weight=QFont.Weight.Bold))
         intro.addWidget(
             label(
-                "Meeting Protocol transcribes meetings on this Mac. It needs a one-time "
+                f"Meeting Protocol transcribes meetings on this {DEVICE}. It needs a one-time "
                 f"download of the speech model ({gigabytes(ASR_BYTES)}). After that it works "
-                "offline, and recordings never leave this Mac.",
+                f"offline, and recordings never leave this {DEVICE}.",
                 14,
                 wrap=True,
             )
@@ -134,7 +135,7 @@ class Setup(QWidget):
 
     def closeEvent(self, event):
         if self.process.state() != QProcess.ProcessState.NotRunning:
-            self.process.terminate()
+            stop_supervisor(self.process)
             self.process.waitForFinished(5000)
         event.accept()
 

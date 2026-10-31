@@ -32,6 +32,12 @@ def windows(pcm, seconds: float):
 
 
 def run(store, config, progress):
+    from .models import asr_backend
+
+    if asr_backend() == "ct2":
+        from .transcription_ct2 import run as run_ct2
+
+        return run_ct2(store, config, progress)
     import mlx.core as mx
     import mlx_whisper
     import numpy as np

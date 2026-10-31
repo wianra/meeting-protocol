@@ -1,0 +1,34 @@
+Meeting Protocol includes or downloads the following third-party components.
+
+pyannote speaker-diarization-community-1 (bundled speaker model)
+  © pyannoteAI and contributors. Licensed under Creative Commons Attribution 4.0
+  (CC BY 4.0), https://creativecommons.org/licenses/by/4.0/
+  Source: https://huggingface.co/pyannote/speaker-diarization-community-1
+  Included unmodified.
+
+Whisper large-v3 (speech model, downloaded on first launch)
+  © OpenAI. MIT License. CTranslate2 conversion by Systran:
+  https://huggingface.co/Systran/faster-whisper-large-v3
+
+FFmpeg (ffmpeg.exe and ffprobe.exe)
+  Licensed under the GNU Lesser General Public License; see FFmpeg-LICENSE.txt.
+  LGPL build by BtbN of FFmpeg n9.0.2-39-g7adfbe40dc:
+  https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-31-12-59
+  Source: https://github.com/FFmpeg/FFmpeg/commit/7adfbe40dc and the build scripts at
+  https://github.com/BtbN/FFmpeg-Builds
+
+Qt and PySide6
+  © The Qt Company. Licensed under the GNU LGPL 3.0. Source:
+  https://download.qt.io and https://code.qt.io/pyside/pyside-setup.git
+  Qt Multimedia includes FFmpeg libraries under the LGPL.
+
+Python
+  © Python Software Foundation. PSF License Agreement.
+  Built by python-build-standalone (https://github.com/astral-sh/python-build-standalone).
+
+Microsoft Visual C++ Redistributable
+  Distributed under the Microsoft Visual Studio redistribution terms.
+
+PyTorch, pyannote.audio, faster-whisper, CTranslate2, NumPy, SciPy, scikit-learn and other
+Python packages are included under their own open-source licences, found next to each
+package inside Lib\site-packages.

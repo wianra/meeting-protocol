@@ -46,7 +46,36 @@ def require_offline() -> None:
         raise RuntimeError("Processing requires the macOS network sandbox. Use ./diarize.")
 
 
+def isolation() -> str:
+    """How networking is denied: by the macOS sandbox, or by this app only (Windows)."""
+    return "app-level" if sys.platform == "win32" else "os-sandbox"
+
+
+def block_network_in_process() -> None:
+    """Windows: refuse every socket connection and name lookup made through Python.
+
+    Weaker than the macOS sandbox, which the operating system enforces for the whole
+    process; this covers Python code (model libraries included), not native code.
+    """
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(errno.EACCES, "Networking is disabled while processing.")
+
+    def refuse_ex(self, address):
+        return errno.EACCES
+
+    socket.socket.connect = refuse
+    socket.socket.connect_ex = refuse_ex
+    socket.socket.sendto = refuse
+    socket.create_connection = refuse
+    socket.getaddrinfo = refuse
+    os.environ["DIARIZE_SANDBOXED"] = "1"
+
+
 def enter_sandbox() -> None:
+    if sys.platform == "win32":
+        block_network_in_process()
+        return
     if os.environ.get("DIARIZE_SANDBOXED") == "1":
         require_offline()
         return

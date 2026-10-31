@@ -4,19 +4,49 @@ import getpass
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from .privacy import home
 from .storage import atomic_write, canonical, digest_file, fingerprint, lock
 
+
+def asr_backend() -> str:
+    """MLX on Apple Silicon; faster-whisper (CTranslate2) elsewhere, i.e. Windows."""
+    default = "mlx" if sys.platform == "darwin" else "ct2"
+    return os.environ.get("MEETING_PROTOCOL_ASR_BACKEND", default)
+
+
+ASR = {
+    "mlx": {
+        "repository": "mlx-community/whisper-large-v3-mlx",
+        "revision": "49e6aa286ad60c14352c404340ded53710378a11",
+        "bytes": 3_083_520_685,  # config.json + weights.npz
+        "patterns": ["config.json", "weights.npz", "weights.safetensors", "README.md", "LICENSE*"],
+    },
+    "ct2": {
+        "repository": "Systran/faster-whisper-large-v3",
+        "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+        "bytes": 3_090_835_702,  # model.bin, config, tokenizer, vocabulary, preprocessor
+        "patterns": [
+            "model.bin",
+            "config.json",
+            "tokenizer.json",
+            "vocabulary.*",
+            "preprocessor_config.json",
+            "README.md",
+            "LICENSE*",
+        ],
+    },
+}
 REPOSITORIES = {
-    "asr": "mlx-community/whisper-large-v3-mlx",
+    "asr": ASR[asr_backend()]["repository"],
     "diarization": "pyannote/speaker-diarization-community-1",
 }
 
 # Revisions tested with this release. The packaged app pins these; the CLI may follow upstream.
-TESTED = {"asr": "49e6aa286ad60c14352c404340ded53710378a11"}
-ASR_BYTES = 3_083_520_685  # config.json + weights.npz at the tested revision
+TESTED = {"asr": ASR[asr_backend()]["revision"]}
+ASR_BYTES = ASR[asr_backend()]["bytes"]
 
 
 def bundled_models() -> Path | None:
@@ -73,7 +103,7 @@ def provision(name: str, revision: str | None = None):
             revision = revision or HfApi().model_info(repo).sha
             # No arbitrary remote Python code or training state is downloaded.
             patterns = (
-                ["config.json", "weights.npz", "weights.safetensors", "README.md", "LICENSE*"]
+                ASR[asr_backend()]["patterns"]
                 if name == "asr"
                 else [
                     "*.yaml",

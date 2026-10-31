@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .privacy import configure, enter_sandbox, home, network_is_denied
+from .privacy import configure, enter_sandbox, home, isolation, network_is_denied
 
 
 def parser():
@@ -88,6 +88,9 @@ def report_launch_error(exc):
 
 
 def main():
+    from .compat import fix_missing_streams
+
+    fix_missing_streams()
     args = parser().parse_args()
     # `app` only installs models before re-entering as the sandboxed `gui`.
     online = args.command in ("login", "provision", "app")
@@ -114,7 +117,15 @@ def main():
 
                 if not run_setup():
                     return 0
-            os.execv(sys.executable, [sys.executable, "-m", "meeting_protocol.cli", "gui"])
+            if sys.platform == "win32":
+                # No exec on Windows: continue in this process, now with networking off.
+                configure(offline=True)
+                enter_sandbox()
+                from .gui.main import launch
+
+                launch(None)
+            else:
+                os.execv(sys.executable, [sys.executable, "-m", "meeting_protocol.cli", "gui"])
         elif args.command == "doctor":
             from .jobs import runtime_versions
 
@@ -124,6 +135,7 @@ def main():
                         "version": __version__,
                         "data_directory": str(home()),
                         "network_denied": network_is_denied(),
+                        "network_isolation": isolation(),
                         "ffmpeg": shutil.which("ffmpeg"),
                         "ffprobe": shutil.which("ffprobe"),
                         "models": {

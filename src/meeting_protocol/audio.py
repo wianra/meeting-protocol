@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from .compat import hidden
 from .storage import atomic_write, canonical, digest_file, fingerprint
 
 RATE = 16000
@@ -15,6 +16,7 @@ def inspect_audio(path: Path) -> dict:
         ["ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)],
         capture_output=True,
         check=True,
+        **hidden(),
     )
     data = json.loads(result.stdout)
     streams = [s for s in data["streams"] if s["codec_type"] == "audio"]
@@ -57,7 +59,7 @@ def prepare(store, config: dict, progress) -> dict:
         args += ["-ac", "1", "-ar", str(RATE), "-f", "s16le", "pipe:1"]
         # Stderr to a local file avoids a pipe deadlock and keeps diagnostics on-device.
         with (store.root / "decode.log").open("wb") as err:
-            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=err)
+            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=err, **hidden())
             blocks, samples = [], 0
             total = max(1, int(config["audio"]["duration"] / 60) + 1)
             try:

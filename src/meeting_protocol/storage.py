@@ -1,6 +1,5 @@
 """Content-verified, atomic artifacts and a single-writer job journal."""
 
-import fcntl
 import hashlib
 import json
 import os
@@ -9,6 +8,8 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+from .compat import WINDOWS, try_lock, unlock
 
 
 def digest_file(path: Path) -> str:
@@ -36,11 +37,12 @@ def atomic_write(path: Path, data: bytes) -> None:
             out.flush()
             os.fsync(out.fileno())
         os.replace(tmp, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if not WINDOWS:  # Windows cannot open directories; NTFS journals the rename.
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -50,14 +52,12 @@ def atomic_write(path: Path, data: bytes) -> None:
 def lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("This job is already running or being edited.") from None
+        if not try_lock(f):
+            raise RuntimeError("This job is already running or being edited.")
         try:
             yield
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            unlock(f)
 
 
 class Store:

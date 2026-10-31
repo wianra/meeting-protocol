@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..compat import stop_supervisor
 from ..export import (
     corrected,
     describe_flags,
@@ -59,7 +60,7 @@ from ..export import (
 from ..jobs import read_config, resolve_job
 from ..privacy import home, require_offline
 from ..storage import Store, lock
-from .common import restore_job, set_app_icon, trash_job
+from .common import DEVICE, restore_job, set_app_icon, trash_job
 
 BG = "#f6f6f4"
 CARD = "#ffffff"
@@ -830,7 +831,7 @@ class NewRecording(QDialog):
         layout.addWidget(
             label(
                 "German and Swiss German are written as Standard German. French and Italian "
-                "stay as spoken. Nothing leaves this Mac.",
+                f"stay as spoken. Nothing leaves this {DEVICE}.",
                 13,
                 "muted",
                 wrap=True,
@@ -838,7 +839,7 @@ class NewRecording(QDialog):
         )
         pick = QHBoxLayout()
         self.source = QLineEdit()
-        self.source.setPlaceholderText("Choose a recording on this Mac")
+        self.source.setPlaceholderText(f"Choose a recording on this {DEVICE}")
         pick.addWidget(self.source, 1)
         browse = button("Choose…")
         browse.clicked.connect(self.browse)
@@ -1342,7 +1343,9 @@ class ProcessPage(QWidget):
                 name = dict(LANES).get(self.current, "")
                 self.now_caption.setText(f"NOW · {name}".upper().strip(" ·"))
                 self.now_text.setText(self.status)
-            self.note.setText("Nothing leaves this Mac. Saved windows are reused when you resume.")
+            self.note.setText(
+                f"Nothing leaves this {DEVICE}. Saved windows are reused when you resume."
+            )
         else:
             self.crumb.setText("MEETINGS / NOT FINISHED")
             self.now_caption.setText("PAUSED")
@@ -1353,7 +1356,9 @@ class ProcessPage(QWidget):
                 )
             else:
                 self.now_text.setText("Finished steps are saved and reused when you resume.")
-            self.note.setText("Nothing leaves this Mac. Completed work is reused when you resume.")
+            self.note.setText(
+                f"Nothing leaves this {DEVICE}. Completed work is reused when you resume."
+            )
         self.pause_button.setVisible(self.busy)
         self.resume_card.setVisible(not self.busy)
         self.add_speakers_button.setVisible(not self.busy and bool(self.cfg.get("asr_only")))
@@ -1454,7 +1459,9 @@ class Window(QMainWindow):
         self.job_list.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.job_list.currentItemChanged.connect(self.select_job)
         layout.addWidget(self.job_list, 1)
-        layout.addWidget(label("Offline. Audio and text stay on this Mac.", 12, "muted", wrap=True))
+        layout.addWidget(
+            label(f"Offline. Audio and text stay on this {DEVICE}.", 12, "muted", wrap=True)
+        )
         return side
 
     def build_main(self):
@@ -1566,7 +1573,7 @@ class Window(QMainWindow):
         self.process_page = page = ProcessPage()
         self.pause_button, self.resume_card = page.pause_button, page.resume_card
         self.resume_button, self.add_speakers_button = page.resume_button, page.add_speakers_button
-        self.pause_button.clicked.connect(self.process.terminate)
+        self.pause_button.clicked.connect(lambda: stop_supervisor(self.process))
         self.resume_button.clicked.connect(lambda: self.resume_job(False))
         self.add_speakers_button.clicked.connect(lambda: self.resume_job(True))
         page.delete_button.clicked.connect(lambda: self.ask_delete(self.root))
@@ -2159,7 +2166,7 @@ class Window(QMainWindow):
             event.ignore()
             return
         if self.is_busy():
-            self.process.terminate()
+            stop_supervisor(self.process)
             if not self.process.waitForFinished(7000):
                 event.ignore()
                 self.notice("Waiting for the worker to stop safely. Try closing again shortly.")
