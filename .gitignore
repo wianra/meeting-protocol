@@ -1,0 +1,22 @@
+.venv/
+.cache/
+.python/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+work/
+.local/
+models/
+jobs/
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.mp4
+.DS_Store
+
+Claude outputs/
+build/
+dist/
+*.egg-info/

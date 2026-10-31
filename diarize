@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ ! -x "$PROJECT_DIR/.venv/bin/python" ]; then
+  echo 'Run ./setup.sh first.' >&2
+  exit 1
+fi
+export DIARIZE_HOME="${DIARIZE_HOME:-$PROJECT_DIR/.local}"
+exec "$PROJECT_DIR/.venv/bin/python" -m meeting_protocol.cli "$@"
