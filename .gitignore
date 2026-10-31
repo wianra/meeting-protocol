@@ -20,3 +20,4 @@ Claude outputs/
 build/
 dist/
 *.egg-info/
+.venv
