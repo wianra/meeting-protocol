@@ -156,6 +156,22 @@ def prune_qt(site: Path):
     print("Kept Qt DLLs:", ", ".join(sorted(needed)))
 
 
+def shorten_licence_paths(site: Path):
+    """Move over-long licence files to short names in the same package's licences folder.
+
+    Licences must ship, but some nest too deep for Explorer's unzip. An index file keeps
+    each original path.
+    """
+    for path in sorted(site.glob("*.dist-info/licenses/**/*")):
+        if path.is_file() and len(str(path.relative_to(APP.parent))) > MAX_PATH_IN_ZIP:
+            licences = next(p for p in path.parents if p.name == "licenses")
+            original = path.relative_to(licences).as_posix()
+            short = licences / f"long-{hashlib.sha256(original.encode()).hexdigest()[:8]}"
+            path.rename(short)
+            with (licences / "LONG-PATHS.txt").open("a", encoding="utf-8") as index:
+                index.write(f"{short.name}: {original}\n")
+
+
 def main():
     os.chdir(ROOT)
     init = output("git", "show", "HEAD:src/meeting_protocol/__init__.py")
@@ -298,6 +314,7 @@ def main():
         sys.exit("Smoke test failed")
 
     print("==> Zip")
+    shorten_licence_paths(site)
     too_long = [p for p in APP.rglob("*") if len(str(p.relative_to(APP.parent))) > MAX_PATH_IN_ZIP]
     if too_long:
         print(*too_long, sep="\n")
