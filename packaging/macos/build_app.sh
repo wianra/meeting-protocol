@@ -5,8 +5,9 @@
 # and ffprobe, and the speaker model. The speech model (3.1 GB) downloads on first launch.
 #
 # Prerequisites: ./setup.sh, packaging/macos/build_ffmpeg.sh, and a provisioned speaker
-# model (./diarize provision diarization). Set SIGN_IDENTITY to a "Developer ID
-# Application" certificate to sign for distribution; the default is ad-hoc.
+# model (./diarize provision diarization). Packages the last commit (HEAD), not uncommitted
+# edits. Set SIGN_IDENTITY to a "Developer ID Application" certificate to sign for
+# distribution; the default is ad-hoc.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
@@ -14,7 +15,7 @@ cd "$ROOT"
 export UV_CACHE_DIR="$ROOT/.cache/uv"
 export UV_PYTHON_INSTALL_DIR="$ROOT/.python"
 NAME="Meeting Protocol"
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/meeting_protocol/__init__.py)
+VERSION=$(git show HEAD:src/meeting_protocol/__init__.py | sed -n 's/^__version__ = "\(.*\)"/\1/p')
 APP="$ROOT/dist/$NAME.app"
 CONTENTS="$APP/Contents"
 RES="$CONTENTS/Resources"
@@ -49,7 +50,10 @@ find "$RES/python/bin" -type l -delete
 echo "==> Locked dependencies and the app"
 uv export --frozen --no-dev --no-emit-project --quiet -o build/app/requirements.txt
 uv pip install --python "$PY" --require-hashes --no-deps -r build/app/requirements.txt
-uv build --wheel --out-dir build/app/wheel --quiet
+# Package the committed code, never uncommitted edits in the working tree.
+mkdir -p build/app/source
+git archive HEAD pyproject.toml README.md LICENSE src | tar -x -C build/app/source
+(cd build/app/source && uv build --wheel --out-dir "$ROOT/build/app/wheel" --quiet)
 uv pip install --python "$PY" --no-deps build/app/wheel/*.whl
 SITE="$RES/python/lib/python3.12/site-packages"
 
