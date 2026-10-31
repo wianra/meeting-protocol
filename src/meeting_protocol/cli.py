@@ -55,6 +55,34 @@ def parser():
     return p
 
 
+WINDOWS = ("app", "gui", "gui-classic", "gui-simple")
+
+
+def report_launch_error(exc):
+    """Finder discards stderr, so a failed app launch is logged locally and shown."""
+    import time
+    import traceback
+
+    log = home() / "logs" / "app.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as f:
+            f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')}\n{traceback.format_exc()}\n")
+    except OSError:
+        pass
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+
+        app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841
+        QMessageBox.critical(
+            None,
+            "Meeting Protocol",
+            f"Meeting Protocol could not start.\n\n{exc}\n\nDetails were saved to {log}",
+        )
+    except Exception as box_error:  # noqa: BLE001 -- best effort; the log remains.
+        print(f"Could not show the error window: {box_error}", file=sys.stderr)
+
+
 def main():
     args = parser().parse_args()
     # `app` only installs models before re-entering as the sandboxed `gui`.
@@ -179,6 +207,8 @@ def main():
     except Exception as exc:  # noqa: BLE001 -- CLI boundary: retain checkpoints and show an error.
         # Errors can include local paths, but never deliberately include model outputs or secrets.
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        if args.command in WINDOWS:
+            report_launch_error(exc)
         return 1
 
 

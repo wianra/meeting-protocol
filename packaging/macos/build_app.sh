@@ -24,6 +24,13 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 FFMPEG_DIR="${FFMPEG_DIR:-$ROOT/build/ffmpeg}"
 
 [ -x "$FFMPEG_DIR/bin/ffmpeg" ] || { echo "Run packaging/macos/build_ffmpeg.sh first." >&2; exit 1; }
+for tool in ffmpeg ffprobe; do
+  # Only system libraries: anything else (e.g. Homebrew) would be missing on users' Macs.
+  if otool -L "$FFMPEG_DIR/bin/$tool" | tail -n +2 | grep -v "^\s*/usr/lib/\|^\s*/System/Library/" | grep -q .; then
+    echo "$FFMPEG_DIR/bin/$tool links non-system libraries; use packaging/macos/build_ffmpeg.sh." >&2
+    exit 1
+  fi
+done
 [ -f "$DATA/models/diarization/manifest.json" ] || {
   echo "Provision the speaker model first: ./diarize provision diarization" >&2; exit 1; }
 

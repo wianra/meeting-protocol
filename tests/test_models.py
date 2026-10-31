@@ -46,3 +46,23 @@ def test_no_bundle_outside_the_app(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_PROTOCOL_BUNDLED_MODELS", raising=False)
     with pytest.raises(RuntimeError, match="No bundled"):
         install_bundled("diarization")
+
+
+def test_failed_app_launch_is_logged_and_shown(tmp_path, monkeypatch):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QMessageBox
+
+    from meeting_protocol import cli
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    shown = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a: shown.append(a[2]))
+    try:
+        raise RuntimeError("The bundled diarization model is damaged; reinstall the app.")
+    except RuntimeError as exc:
+        cli.report_launch_error(exc)
+    log = (tmp_path / "data" / "logs" / "app.log").read_text()
+    assert "RuntimeError" in log and "damaged" in log
+    assert "damaged" in shown[0] and "app.log" in shown[0]
