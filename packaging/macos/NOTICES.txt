@@ -1,0 +1,29 @@
+Meeting Protocol includes or downloads the following third-party components.
+
+pyannote speaker-diarization-community-1 (bundled speaker model)
+  © pyannoteAI and contributors. Licensed under Creative Commons Attribution 4.0
+  (CC BY 4.0), https://creativecommons.org/licenses/by/4.0/
+  Source: https://huggingface.co/pyannote/speaker-diarization-community-1
+  Included unmodified.
+
+Whisper large-v3 (speech model, downloaded on first launch)
+  © OpenAI. MIT License. MLX conversion by mlx-community:
+  https://huggingface.co/mlx-community/whisper-large-v3-mlx
+
+FFmpeg (ffmpeg and ffprobe command-line tools)
+  Licensed under the GNU Lesser General Public License 2.1 or later; see
+  COPYING.LGPLv2.1. Built without GPL or non-free parts. Source and the exact
+  configure line: see BUILD-INFO.txt.
+
+Qt and PySide6
+  © The Qt Company. Licensed under the GNU LGPL 3.0. Source:
+  https://download.qt.io and https://code.qt.io/pyside/pyside-setup.git
+  Qt Multimedia includes FFmpeg libraries under the LGPL.
+
+Python
+  © Python Software Foundation. PSF License Agreement.
+  Built by python-build-standalone (https://github.com/astral-sh/python-build-standalone).
+
+PyTorch, pyannote.audio, MLX, mlx-whisper, NumPy, SciPy, scikit-learn and other
+Python packages are included under their own open-source licences, found next to
+each package inside Contents/Resources/python/lib/python3.12/site-packages.

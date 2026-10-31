@@ -4,7 +4,18 @@ A local meeting transcription app for Apple Silicon Macs. German and Swiss Germa
 
 This is a working first version using **Whisper large-v3 through MLX** and **pyannote Community-1 on CPU**. It includes a desktop review app, a resumable CLI, persistent neural-batch checkpoints, and plain speaker-attributed transcripts. It has been tested on the supplied 28-second sample. Accuracy across dialects, Italian, heavy overlap and hour-long meetings still needs representative recordings; see `docs/VALIDATION.md`.
 
-## Open the app
+## Install the Mac app
+
+Requires a Mac with Apple Silicon (M1 or later) and macOS 14 or later, plus about 6 GB of free space.
+
+1. Download **MeetingProtocol-…-arm64.dmg** from the [latest release](https://github.com/wianra/meeting-protocol/releases/latest).
+2. Open it and drag **Meeting Protocol** onto **Applications**.
+3. Open Meeting Protocol from Applications. The first time, macOS says it cannot verify the app, because it is not yet signed by a registered Apple developer. Click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Meeting Protocol, then confirm. This is needed only once.
+4. Click **Download** to fetch the speech model (3.1 GB, one time). Everything after that runs offline.
+
+No Python, Homebrew, FFmpeg or Hugging Face account is needed. Meetings and models are stored in `~/Library/Application Support/Meeting Protocol`. To uninstall, delete the app and that folder.
+
+## Open the app from source
 
 From this folder:
 
@@ -112,7 +123,7 @@ The application cannot control system backups or another program's folder synchr
 
 The current Mac launcher relies on `/usr/bin/sandbox-exec`. It fails closed if the sandbox cannot be started. When launching from an already sandboxed development tool, an outer permission escalation may be needed to start the application's own sandbox; the audio worker itself still has networking denied.
 
-## Install on another Apple Silicon Mac
+## Install from source on another Apple Silicon Mac
 
 Requirements: macOS, `uv`, FFmpeg/ffprobe, and enough free space for the environment, approximately 3 GB of ASR weights plus the speaker model, and local audio/checkpoints. Python 3.12 is selected by the setup script. The tested machine has 24 GB unified memory. CPU/GPU models run in separate worker processes to release memory between stages.
 
@@ -133,6 +144,19 @@ Use a download/read token with access to the gated repository. The login prompt 
 
 `uv.lock` pins the tested dependency set. The pyannote caching adapter is deliberately restricted to version 4.0.7; update its compatibility tests before changing that version. Model provisioning records exact repository revisions and file hashes. Existing jobs retain their original model references.
 
+## Build the Mac app
+
+```sh
+./setup.sh
+./diarize provision diarization        # the speaker model is bundled into the app
+packaging/macos/build_ffmpeg.sh        # static LGPL ffmpeg/ffprobe, built from verified source
+packaging/macos/build_app.sh           # dist/Meeting Protocol.app and dist/MeetingProtocol-VERSION-arm64.dmg
+```
+
+The app contains a standalone Python with the locked dependencies, the minimal FFmpeg build, the speaker model (CC BY 4.0, attribution in `Contents/Resources/licenses`) and only the Qt modules the app uses. A small native launcher (`packaging/macos/launcher.c`) runs Python in-process, so macOS shows the app's name and icon. On first launch, before entering the network sandbox, the app copies the speaker model into its data folder and downloads the tested Whisper revision; it opens no recordings at that point.
+
+The default build is ad-hoc signed. With an Apple Developer ID, set `SIGN_IDENTITY="Developer ID Application: …"` to sign with the hardened runtime, then notarise the DMG with `xcrun notarytool submit --wait` and `xcrun stapler staple`.
+
 ## Recovery and current limits
 
 ASR saves each 15–20-second region (configurable), including contextual overlap. Speaker segmentation and embeddings save each small inference batch while preserving the upstream sliding-window grid. Final speaker clustering uses the entire recording, so independently processed chunks do not each reset Speaker A/B.
@@ -141,7 +165,7 @@ Atomic artifact writes precede SQLite completion records. Restart checks hashes,
 
 **The three-minute maximum-loss target is not yet certified for hour-long meetings.** Sample ASR batches took up to 8.3 seconds and speaker neural batches up to 1 second in the initial run. Global clustering/reconstruction is currently committed as a whole; a crash during that step recomputes it from saved neural features. Test it on an actual long recording before relying on a strict wall-clock recovery bound.
 
-This version uses a baseline multilingual model, with language detection per window. Very short passages and language changes inside a window can be misrecognised or translated. Swiss German specialist comparisons, an independent Qwen pass, explicit language-region overrides, separate microphone processing, source separation, subtitles, summaries and a signed standalone `.app` installer remain later work. No automatic cleanup model rewrites the transcript.
+This version uses a baseline multilingual model, with language detection per window. Very short passages and language changes inside a window can be misrecognised or translated. Swiss German specialist comparisons, an independent Qwen pass, explicit language-region overrides, separate microphone processing, source separation, subtitles, summaries and a signed and notarised app remain later work. No automatic cleanup model rewrites the transcript.
 
 ## Project layout
 
@@ -149,6 +173,7 @@ This version uses a baseline multilingual model, with language detection per win
 diarize, setup.sh                 Command-line launcher and installer
 Open Meeting Protocol.command     Double-click launcher for the app
 launchers/                        Launchers for the classic and simple windows
+packaging/macos/                  Mac app build: ffmpeg, Qt trimming, launcher, icon, Info.plist
 src/meeting_protocol/
   cli.py                          Commands and the network sandbox entry point
   audio, transcription, diarization, transcript, jobs, storage, export, word, models, privacy
@@ -156,6 +181,7 @@ src/meeting_protocol/
     main.py                       Default window (meetings, player, transcript)
     classic.py, simple.py         Earlier window layouts
     common.py                     App icon and move-to-Trash helpers
+    setup.py                      First-run model download for the packaged app
     assets/app-icon.svg           App and Dock icon
 tests/                            Unit and offscreen GUI tests
 docs/                             Research plan and validation evidence

@@ -2,6 +2,8 @@
 
 import getpass
 import json
+import os
+import shutil
 from pathlib import Path
 
 from .privacy import home
@@ -12,6 +14,45 @@ REPOSITORIES = {
     "diarization": "pyannote/speaker-diarization-community-1",
 }
 
+# Revisions tested with this release. The packaged app pins these; the CLI may follow upstream.
+TESTED = {"asr": "49e6aa286ad60c14352c404340ded53710378a11"}
+ASR_BYTES = 3_083_520_685  # config.json + weights.npz at the tested revision
+
+
+def bundled_models() -> Path | None:
+    """Models shipped inside the packaged app, if this is one."""
+    value = os.environ.get("MEETING_PROTOCOL_BUNDLED_MODELS")
+    return Path(value) if value else None
+
+
+def is_installed(name: str) -> bool:
+    return (home() / "models" / name / "manifest.json").exists()
+
+
+def install_bundled(name: str) -> dict:
+    """Copy a model shipped with the app into the data directory and verify it.
+
+    Jobs record model paths, so models live in the data directory, not inside the app,
+    which can be moved or replaced by an update.
+    """
+    source_root = bundled_models()
+    if source_root is None or not (source_root / name / "manifest.json").exists():
+        raise RuntimeError(f"No bundled {name} model in this build.")
+    shipped = json.loads((source_root / name / "manifest.json").read_text())
+    folder = home() / "models" / name
+    folder.mkdir(parents=True, exist_ok=True)
+    with lock(folder / ".provision.lock"):
+        target = folder / shipped["revision"]
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source_root / name / shipped["revision"], target)
+        for relative, sha in shipped["files"].items():
+            if digest_file(target / relative) != sha:
+                raise RuntimeError(f"The bundled {name} model is damaged; reinstall the app.")
+        manifest = {**shipped, "path": str(target)}
+        atomic_write(folder / "manifest.json", canonical(manifest))
+    return {"name": name, "revision": shipped["revision"], "files": len(shipped["files"])}
+
 
 def login():
     from huggingface_hub import login as hf_login
@@ -20,7 +61,7 @@ def login():
     hf_login(token=token, add_to_git_credential=False)
 
 
-def provision(name: str):
+def provision(name: str, revision: str | None = None):
     from huggingface_hub import HfApi, snapshot_download
     from huggingface_hub.errors import GatedRepoError
 
@@ -29,7 +70,7 @@ def provision(name: str):
     folder.mkdir(parents=True, exist_ok=True)
     with lock(folder / ".provision.lock"):
         try:
-            revision = HfApi().model_info(repo).sha
+            revision = revision or HfApi().model_info(repo).sha
             # No arbitrary remote Python code or training state is downloaded.
             patterns = (
                 ["config.json", "weights.npz", "weights.safetensors", "README.md", "LICENSE*"]

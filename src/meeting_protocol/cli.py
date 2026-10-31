@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -18,6 +19,8 @@ def parser():
     sub.add_parser("login", help="Enter a Hugging Face download token locally")
     provision = sub.add_parser("provision", help="Download a model (no audio processing)")
     provision.add_argument("model", choices=["asr", "diarization"])
+    provision.add_argument("--tested", action="store_true", help="Use the tested revision")
+    sub.add_parser("app", help="Packaged app entry: first-run setup, then the desktop app")
     run = sub.add_parser("transcribe", help="Create or resume a local job")
     run.add_argument("audio", type=Path)
     run.add_argument("--language", choices=["auto", "de", "fr", "it"], default="auto")
@@ -54,7 +57,8 @@ def parser():
 
 def main():
     args = parser().parse_args()
-    online = args.command in ("login", "provision")
+    # `app` only installs models before re-entering as the sandboxed `gui`.
+    online = args.command in ("login", "provision", "app")
     configure(offline=not online)
     try:
         if not online:
@@ -64,9 +68,21 @@ def main():
 
             login()
         elif args.command == "provision":
-            from .models import provision
+            from .models import TESTED, provision
 
-            print(json.dumps(provision(args.model)))
+            revision = TESTED.get(args.model) if args.tested else None
+            print(json.dumps(provision(args.model, revision)))
+        elif args.command == "app":
+            from .models import bundled_models, install_bundled, is_installed
+
+            if bundled_models() and not is_installed("diarization"):
+                install_bundled("diarization")
+            if not is_installed("asr"):
+                from .gui.setup import run_setup
+
+                if not run_setup():
+                    return 0
+            os.execv(sys.executable, [sys.executable, "-m", "meeting_protocol.cli", "gui"])
         elif args.command == "doctor":
             from .jobs import runtime_versions
 

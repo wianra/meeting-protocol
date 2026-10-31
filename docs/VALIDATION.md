@@ -28,7 +28,7 @@ The full local sample job is `ef3ced2601ae83e6`. Its exports and review app rema
 - No real hour-long meeting has completed the full pipeline yet. Global clustering and reconstruction do not have intra-step checkpoints; the three-minute computation-loss requirement remains an acceptance target for long-recording validation.
 - The sample's approximate word timings required conservative nearest-speech attribution for two short gaps; these assignments are flagged for review. Swiss German reformulation can make word alignment approximate more generally.
 - GUI playback controls and media loading are present; the automated test used generated silence and did not assess the user's listening experience or audio output device.
-- The current desktop launcher uses the project environment. It is not a signed/notarised standalone Mac installer.
+- The Mac app (`packaging/macos/`) is ad-hoc signed, not signed with a Developer ID or notarised; first launch needs Open Anyway.
 
 ## Correction export update
 
@@ -37,3 +37,13 @@ Added an Export save dialog and Open export folder button, plus an editable Word
 All 22 tests pass, including latest-correction export, Word XML escaping and Unicode, no embedded private metadata or external resources, immutable export history, extension selection, cancelled dialogs, protected internal job files and disabled export during processing. A synthetic German/French/Italian document was rendered to two pages and both page images inspected; wrapping and long-turn pagination were clean. No private meeting text was used in the visual preview.
 
 Next useful validation: review the sample locally, then run a representative hour-long meeting and annotate several excerpts covering each language, returning speakers, overlap and important names/numbers. Use those results to decide whether a Swiss German specialist or second ASR model is worthwhile.
+
+## Mac app packaging
+
+`packaging/macos/build_app.sh` produced a 1.6 GB app and a 445 MB DMG. Checks on the development Mac (31 Oct 2026):
+
+- With the project environment, the system Python framework, uv's Python and `~/.cache` blocked by a sandbox profile, the bundled app decoded, transcribed and diarised the sample end to end and wrote exports, using an empty data folder and the bundled speaker model.
+- With `/opt/homebrew` and `/usr/local` also blocked, torch, MLX, pyannote (pipeline run on synthetic audio) and Qt Multimedia loaded from the bundle alone.
+- A first-run download through the bundled app fetched the pinned Whisper revision anonymously (no Hugging Face account).
+- Opened with `open`: first launch showed the setup window; after the model was present, the app installed the bundled speaker model and re-launched as the network-sandboxed main window. macOS reports the process as "Meeting Protocol".
+- Not yet verified: the build with the from-source FFmpeg (the checks above used a temporary Homebrew stand-in for ffmpeg/ffprobe), installing from a downloaded (quarantined) DMG, and a Mac that has never had developer tools installed.
