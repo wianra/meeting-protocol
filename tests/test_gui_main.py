@@ -235,3 +235,91 @@ def test_main_window_names_speakers_in_every_turn_and_export(tmp_path, monkeypat
     window.open_job(root)
     assert window.rows[0].name.text() == "Raphael Winkler"
     window.close()
+
+
+def test_processing_strip_follows_each_step_and_freezes_when_paused(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    from meeting_protocol.gui import main
+    from meeting_protocol.storage import Store
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    done = make_job(tmp_path)
+    root = make_job(tmp_path, "running", with_text=False)
+    config = json.loads((root / "job.json").read_text())
+    config.update(audio={"duration": 2832.0}, min_speakers=2, max_speakers=10, language="de")
+    (root / "job.json").write_text(json.dumps(config))
+    app = QApplication.instance() or QApplication([])
+    window = main.Window(str(done))
+    window.show()
+    app.processEvents()
+    page = window.process_page
+    monkeypatch.setattr(main.Window, "is_busy", lambda self: True)
+    page.start(name="running")
+    window.set_busy(True)
+    assert window.pages.currentWidget() is page and page.crumb.text() == "MEETINGS / NEW"
+
+    window.handle_event({"job": str(root), "status": "running"})
+    assert page.facts.text() == "47:12 · 2–10 SPEAKERS · GERMAN"
+    window.handle_event(
+        {"stage": "decode", "done": 20, "total": 48, "message": "Audio block saved"}
+    )
+    assert page.lanes["audio"]["done"] == 20 and page.step.text() == "1 / 4"
+    # Decoding never reports done == total; the next step finishing it is what counts.
+    window.handle_event(
+        {"stage": "decode", "done": 47, "total": 48, "message": "Audio block saved"}
+    )
+    window.handle_event(
+        {
+            "stage": "transcription",
+            "done": 23,
+            "total": 41,
+            "message": "Window saved",
+            "at": 1726.0,
+            "latest": "dann schieben wir das Release",
+            "latest_at": 1700.0,
+        }
+    )
+    assert page.lanes["audio"] == {"done": 47, "total": 47, "cells": True, "complete": True}
+    assert page.windows.text() == "23 / 41" and page.step.text() == "2 / 4"
+    assert page.now_caption.text() == "LATEST · 28:20" and "Release" in page.now_text.text()
+    window.handle_event(
+        {"stage": "speaker_segmentation", "done": 0, "total": 0, "message": "Saved batches: 0"}
+    )
+    assert page.lanes["text"]["complete"] and page.step.text() == "3 / 4"
+    assert "Speaker segmentation" in page.now_text.text()
+    window.handle_event({"stage": "export", "done": 1, "total": 1, "message": "Draft saved"})
+    assert page.lanes["speakers"]["complete"] and page.lanes["draft"]["complete"]
+    page.strip.grab()  # Paints every lane without errors.
+
+    # Stopped part-way: the strip shows the saved progress, with Resume instead of Pause.
+    store = Store(root)
+    store.event("decode", 47, 48, "Audio block saved")
+    store.event("transcription", 23, 41, "Window saved")
+    store.close()
+    monkeypatch.setattr(main.Window, "is_busy", lambda self: False)
+    page.stop()
+    window.open_job(root)
+    assert window.pages.currentWidget() is page and page.crumb.text() == "MEETINGS / NOT FINISHED"
+    assert page.windows.text() == "23 / 41" and "window 24" in page.now_text.text()
+    assert page.pause_button.isHidden() and not window.resume_card.isHidden()
+    assert window.add_speakers_button.isHidden() and window.resume_button.isEnabled()
+    page.strip.grab()
+
+    # Adding speakers to a text-only meeting: the worker turns the Speakers step on.
+    config["asr_only"] = True
+    (root / "job.json").write_text(json.dumps(config))
+    window.open_job(root)
+    assert not window.add_speakers_button.isHidden() and page.step.text() == "2 / 3"
+    monkeypatch.setattr(window.process, "start", lambda *a: None)
+    monkeypatch.setattr(main.Window, "is_busy", lambda self: True)
+    window.add_speakers_button.click()
+    assert page.busy and page.crumb.text() == "MEETINGS / RESUMING"
+    config["asr_only"] = False
+    (root / "job.json").write_text(json.dumps(config))
+    window.handle_event({"job": str(root), "status": "running"})
+    window.handle_event({"stage": "speaker_segmentation", "done": 4, "total": 9, "message": ""})
+    assert "speakers" not in page.strip.skipped and page.step.text() == "3 / 4"
+    monkeypatch.setattr(main.Window, "is_busy", lambda self: False)
+    page.stop()
+    window.close()

@@ -164,7 +164,7 @@ def _worker_locked(root: Path, stage: str):
     store = Store(root)
     last_time = 0.0
 
-    def progress(name, done, total, message=""):
+    def progress(name, done, total, message="", **extra):
         nonlocal last_time
         now = time.monotonic()
         # Do not emit thousands of cached-batch updates on resume.
@@ -172,10 +172,9 @@ def _worker_locked(root: Path, stage: str):
             return
         last_time = now
         store.event(name, done, total, message)
-        print(
-            json.dumps({"stage": name, "done": done, "total": total, "message": message}),
-            flush=True,
-        )
+        # Extras (how far the text has got, its latest line) are for the live window only.
+        event = {"stage": name, "done": done, "total": total, "message": message, **extra}
+        print(json.dumps(event), flush=True)
 
     try:
         if stage == "decode":
