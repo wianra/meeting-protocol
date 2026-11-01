@@ -1,6 +1,6 @@
 # Meeting Protocol
 
-A local meeting transcription app for Apple Silicon Macs. German and Swiss German speech are rendered as Standard German; French and Italian remain in their spoken language. The default speaker range is 2–10.
+A local meeting transcription app for Apple Silicon Macs and Windows PCs. German and Swiss German speech are rendered as Standard German; French and Italian remain in their spoken language. The default speaker range is 2–10.
 
 This is a working first version using **Whisper large-v3 through MLX** and **pyannote Community-1 on CPU**. It includes a desktop review app, a resumable CLI, persistent neural-batch checkpoints, and plain speaker-attributed transcripts. It has been tested on the supplied 28-second sample. Accuracy across dialects, Italian, heavy overlap and hour-long meetings still needs representative recordings; see `docs/VALIDATION.md`.
 
@@ -15,9 +15,16 @@ Requires a Mac with Apple Silicon (M1 or later) and macOS 14 or later, plus abou
 
 No Python, Homebrew, FFmpeg or Hugging Face account is needed. Meetings and models are stored in `~/Library/Application Support/Meeting Protocol`. To uninstall, delete the app and that folder.
 
-## Windows (test build)
+## Install on Windows
 
-A Windows 10/11 (64-bit) test build is on the [windows-test pre-release](https://github.com/wianra/meeting-protocol/releases/tag/windows-test). Download the zip, right-click it → **Extract All**, open the extracted **MeetingProtocol** folder and double-click **Meeting Protocol.exe**. If Windows shows "Windows protected your PC", click **More info → Run anyway** (the app is not signed yet). The first launch downloads the speech model (3.1 GB); meetings are stored in `%LOCALAPPDATA%\Meeting Protocol`.
+Requires Windows 10 or 11 (64-bit) and about 6 GB of free space.
+
+1. Download **MeetingProtocol-…-windows-x64.zip** from the [latest release](https://github.com/wianra/meeting-protocol/releases/latest).
+2. Right-click it → **Extract All**, open the extracted **MeetingProtocol** folder and double-click **Meeting Protocol.exe**.
+3. If Windows shows "Windows protected your PC", click **More info → Run anyway** (the app is not signed yet).
+4. Click **Download** to fetch the speech model (3.1 GB, one time).
+
+Meetings and models are stored in `%LOCALAPPDATA%\Meeting Protocol`. To uninstall, delete the extracted folder and that folder.
 
 Differences from the Mac app: transcription runs on the CPU with faster-whisper, so expect roughly one to two times the meeting length; and networking is blocked by the app itself, not by the operating system (see Privacy).
 

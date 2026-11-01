@@ -1,11 +1,16 @@
-# Builds the Windows app on a Windows machine and attaches the zip to a test pre-release.
-# There is no Windows build on the Mac; this is the only place it can be produced.
+# Builds the Windows app on a Windows machine and attaches the zip to a release: the
+# windows-test pre-release for pushes to the windows branch, or the release named when run
+# by hand. There is no Windows build on the Mac; this is the only place it can be produced.
 name: Windows build
 
 on:
   push:
     branches: [windows]
   workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag to attach the zip to
+        default: windows-test
 
 permissions:
   contents: write
@@ -24,8 +29,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: uv run --no-project --python 3.12 python packaging/windows/build.py
-      - name: Attach to the Windows test pre-release
+      - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release || 'windows-test' }}
         shell: bash
-        run: gh release upload windows-test dist/MeetingProtocol-*-windows-x64.zip --clobber
+        run: gh release upload "$RELEASE" dist/MeetingProtocol-*-windows-x64.zip --clobber
