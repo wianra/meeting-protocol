@@ -11,7 +11,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from .audio import inspect_audio
-from .compat import WorkerGroup
+from .compat import WorkerGroup, watch_gui_parent
 from .models import asr_backend, model_info
 from .privacy import home, require_offline
 from .storage import Store, atomic_write, canonical, digest_file, fingerprint, lock
@@ -222,3 +222,5 @@ def install_cancel_handler():
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, cancel)
+    if parent := os.environ.get("DIARIZE_GUI_PARENT_PID"):
+        watch_gui_parent(int(parent))

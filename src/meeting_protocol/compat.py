@@ -137,3 +137,41 @@ def stop_supervisor(process) -> None:
         k32.CloseHandle(wintypes.HANDLE(handle))
     else:
         process.kill()
+
+
+def watch_gui_parent(expected_pid):
+    """Stop a desktop supervisor if its window dies without a normal close.
+
+    Unix sends SIGTERM so the supervisor can clean up. Windows uses a process handle
+    (which cannot be confused by PID reuse); exiting closes the worker job object.
+    """
+    import signal
+    import threading
+    import time
+
+    if not WINDOWS:
+
+        def watch():
+            while os.getppid() == expected_pid:
+                time.sleep(0.25)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    else:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        handle = k32.OpenProcess(0x00100000, False, expected_pid)  # SYNCHRONIZE
+        if not handle:
+            raise KeyboardInterrupt
+
+        def watch():
+            try:
+                result = k32.WaitForSingleObject(wintypes.HANDLE(handle), 0xFFFFFFFF)
+                if result == 0:  # WAIT_OBJECT_0: the GUI process has exited.
+                    os._exit(130)
+            finally:
+                k32.CloseHandle(wintypes.HANDLE(handle))
+
+    threading.Thread(target=watch, daemon=True).start()

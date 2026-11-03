@@ -311,8 +311,11 @@ def test_processing_strip_follows_each_step_and_freezes_when_paused(tmp_path, mo
     (root / "job.json").write_text(json.dumps(config))
     window.open_job(root)
     assert not window.add_speakers_button.isHidden() and page.step.text() == "2 / 3"
-    monkeypatch.setattr(window.process, "start", lambda *a: None)
-    monkeypatch.setattr(main.Window, "is_busy", lambda self: True)
+
+    def started(*args):
+        monkeypatch.setattr(main.Window, "is_busy", lambda self: True)
+
+    monkeypatch.setattr(window.process, "start", started)
     window.add_speakers_button.click()
     assert page.busy and page.crumb.text() == "MEETINGS / RESUMING"
     config["asr_only"] = False
@@ -322,4 +325,255 @@ def test_processing_strip_follows_each_step_and_freezes_when_paused(tmp_path, mo
     assert "speakers" not in page.strip.skipped and page.step.text() == "3 / 4"
     monkeypatch.setattr(main.Window, "is_busy", lambda self: False)
     page.stop()
+    window.close()
+
+
+def queue_window(tmp_path, monkeypatch):
+    """Use real Qt scheduling with a controllable local worker boundary."""
+    from PySide6.QtCore import QProcess
+    from PySide6.QtWidgets import QApplication
+
+    from meeting_protocol.gui import main
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    app = QApplication.instance() or QApplication([])
+    previous = make_job(tmp_path, "previous")
+    window = main.Window(str(previous))
+    worker = {"running": False, "starts": [], "stops": 0}
+
+    def start(executable, args):
+        assert not worker["running"], "Only one recording may run at a time"
+        worker["running"] = True
+        worker["starts"].append(args)
+
+    def stop(*args):
+        worker["stops"] += 1
+
+    monkeypatch.setattr(window.process, "start", start)
+    monkeypatch.setattr(
+        window.process,
+        "state",
+        lambda: (
+            QProcess.ProcessState.Running if worker["running"] else QProcess.ProcessState.NotRunning
+        ),
+    )
+    monkeypatch.setattr(main, "stop_supervisor", stop)
+    monkeypatch.setattr(window, "receive", lambda: None)
+    monkeypatch.setattr(window, "receive_errors", lambda: None)
+    monkeypatch.setattr(window, "notice", lambda text: (_ for _ in ()).throw(AssertionError(text)))
+    return app, window, worker
+
+
+def finish_worker(window, worker, code=0):
+    from PySide6.QtCore import QProcess
+
+    worker["running"] = False
+    window.finished(code, QProcess.ExitStatus.NormalExit)
+
+
+def test_queue_runs_sequentially_continues_after_failure_and_pauses(tmp_path, monkeypatch):
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    a = make_job(tmp_path, "a")
+    sources = [str(tmp_path / f"{name}.wav") for name in "abcd"]
+    window.enqueue([["transcribe", path] for path in sources[:3]])
+    assert len(worker["starts"]) == 1 and window.new_button.isEnabled()
+    assert not window.job_list.isEnabled()
+    window.handle_event({"job": str(a), "status": "running"})
+    window.enqueue([["transcribe", sources[3]]])
+    assert len(worker["starts"]) == 1
+    finish_worker(window, worker)
+    app.processEvents()
+    assert worker["starts"][-1][3] == sources[1]
+
+    # Failure before the job event must not assign the previous recording to this entry.
+    window.errors = "Original audio is missing"
+    finish_worker(window, worker, 1)
+    app.processEvents()
+    assert worker["starts"][-1][3] == sources[2]
+    failed = window.queue.entries[1]
+    assert failed["state"] == "failed" and failed["job"] is None
+    assert failed["error"] == "Original audio is missing"
+    assert window.root == a
+    window.pause_queue()
+    assert worker["stops"] == 1
+    finish_worker(window, worker, 130)
+    app.processEvents()
+    assert len(worker["starts"]) == 3
+    assert [e["state"] for e in window.queue.entries] == ["done", "failed", "paused", "waiting"]
+
+    # Retry queues the failed recording and waits for an explicit resume.
+    window.queue_list.setCurrentRow(1)
+    window.retry_queue_entry()
+    assert len(worker["starts"]) == 3
+    window.toggle_queue()
+    assert worker["starts"][-1][3] == sources[1]
+    finish_worker(window, worker)
+    app.processEvents()
+    assert worker["starts"][-1][3] == sources[2]
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    window.close()
+
+
+def test_close_cannot_launch_next_and_reopening_requires_resume(tmp_path, monkeypatch):
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    root = make_job(tmp_path, "active", with_text=False)
+    source = Path(json.loads((root / "job.json").read_text())["input"])
+    original = source.read_bytes()
+    window.enqueue([["transcribe", str(source)], ["transcribe", str(tmp_path / "later.wav")]])
+    window.handle_event({"job": str(root), "status": "running"})
+
+    def stopped(timeout):
+        assert window.closing
+        finish_worker(window, worker, 130)
+        return True
+
+    monkeypatch.setattr(window.process, "waitForFinished", stopped)
+    window.close()
+    app.processEvents()
+    assert len(worker["starts"]) == 1
+    assert [e["state"] for e in window.queue.entries] == ["paused", "waiting"]
+
+    from meeting_protocol.gui.main import Window
+
+    reopened = Window()
+    assert reopened.active_entry is None and not reopened.queue_running
+    app.processEvents()
+    assert not reopened.is_busy()
+    # Removing a paused entry changes queue membership, not source files or job files.
+    reopened.queue_list.setCurrentRow(0)
+    reopened.remove_queue_entry()
+    assert source.read_bytes() == original and (root / "job.json").exists()
+    reopened.close()
+
+
+def test_failed_worker_start_advances_and_missing_resume_job_is_retryable(tmp_path, monkeypatch):
+    from PySide6.QtCore import QProcess
+
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    normal_start = window.process.start
+    attempts = []
+
+    def start(executable, args):
+        attempts.append(args)
+        if len(attempts) == 1:
+            window.process_error(QProcess.ProcessError.FailedToStart)
+        else:
+            normal_start(executable, args)
+
+    monkeypatch.setattr(window.process, "start", start)
+    window.enqueue(
+        [
+            ["transcribe", str(tmp_path / "first.wav")],
+            ["resume", str(tmp_path / "deleted-job")],
+            ["transcribe", str(tmp_path / "third.wav")],
+        ]
+    )
+    app.processEvents()
+    app.processEvents()
+    assert [e["state"] for e in window.queue.entries] == ["failed", "failed", "running"]
+    assert "Could not start" in window.queue.entries[0]["error"]
+    assert len(attempts) == 2
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    window.close()
+
+
+def test_multiple_file_picker_and_explicit_file_locations(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    from meeting_protocol.gui.files import FilesDialog
+    from meeting_protocol.gui.main import NewRecording
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    app = QApplication.instance() or QApplication([])
+    root = make_job(tmp_path)
+    a, b = str(tmp_path / "first.wav"), str(tmp_path / "second.wav")
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *args, **kw: ([a, b], ""))
+    dialog = NewRecording(None)
+    dialog.browse()
+    dialog.browse()
+    assert dialog.sources.count() == 2
+    dialog.language.setCurrentIndex(2)
+    dialog.asr_only.setChecked(True)
+    assert dialog.commands() == [
+        [
+            "transcribe",
+            source,
+            "--language",
+            "fr",
+            "--min-speakers",
+            "2",
+            "--max-speakers",
+            "10",
+            "--asr-only",
+        ]
+        for source in (a, b)
+    ]
+    dialog.sources.setCurrentRow(0)
+    dialog.remove_selected()
+    assert dialog.sources.count() == 1
+    dialog.close()
+    files = FilesDialog(None, root)
+    files.show()
+    app.processEvents()
+    assert files.source_path.text() == json.loads((root / "job.json").read_text())["input"]
+    assert files.outputs_path.text() == str(root / "exports")
+    assert files.job_path.text() == str(root)
+    assert files.data_path.text() == str(tmp_path / "data")
+    assert "no copy of the original is imported" in files.source_note.text()
+    files.close()
+
+
+def test_paused_recording_resumes_its_saved_job(tmp_path, monkeypatch):
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    root = make_job(tmp_path, "saved", with_text=False)
+    source = json.loads((root / "job.json").read_text())["input"]
+    window.enqueue([["transcribe", source, "--language", "de"]])
+    window.handle_event({"job": str(root), "status": "running"})
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    app.processEvents()
+    window.resume_job(False)
+    assert len(window.queue.entries) == 1
+    assert worker["starts"][-1] == ["-m", "meeting_protocol.cli", "resume", str(root)]
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    window.close()
+
+
+def test_queue_disk_failure_prevents_worker_launch(tmp_path, monkeypatch):
+    from meeting_protocol import queue as module
+
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    window.queue.add([["transcribe", str(tmp_path / "a.wav")]])
+    notices = []
+    monkeypatch.setattr(window, "notice", notices.append)
+
+    def no_space(*args):
+        raise OSError("No space left")
+
+    monkeypatch.setattr(module, "atomic_write", no_space)
+    window.toggle_queue()
+    app.processEvents()
+    assert worker["starts"] == []
+    assert not window.queue_running and window.queue_storage_error
+    assert not window.new_button.isEnabled() and not window.queue_toggle.isEnabled()
+    assert "No space left" in notices[0]
+    window.close()
+
+
+def test_resume_while_worker_is_stopping_does_not_skip_the_paused_file(tmp_path, monkeypatch):
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    source = str(tmp_path / "first.wav")
+    window.enqueue([["transcribe", source], ["transcribe", str(tmp_path / "later.wav")]])
+    window.pause_queue()
+    window.toggle_queue()  # Request resume before the old supervisor has actually exited.
+    assert len(worker["starts"]) == 1
+    finish_worker(window, worker, 130)
+    app.processEvents()
+    assert window.queue.entries[0]["state"] == "running"
+    assert worker["starts"][-1][3] == source
+    window.pause_queue()
+    finish_worker(window, worker, 130)
     window.close()
