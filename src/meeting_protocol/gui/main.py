@@ -7,11 +7,12 @@ processing are shared with the classic window (`gui/classic.py`); only the inter
 
 import html
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -59,8 +60,10 @@ from ..export import (
 )
 from ..jobs import read_config, resolve_job
 from ..privacy import home, require_offline
+from ..queue import ProcessingQueue, QueueInUse
 from ..storage import Store, lock
 from .common import DEVICE, restore_job, set_app_icon, trash_job
+from .files import FilesDialog
 
 BG = "#f6f6f4"
 CARD = "#ffffff"
@@ -132,6 +135,9 @@ QListWidget#jobs {{ background: transparent; border: 0; outline: none; }}
 QListWidget#jobs::item {{ padding: 0; margin: 1px 0; border-radius: 6px; color: {TEXT}; }}
 QListWidget#jobs::item:hover {{ background: {HOVER}; }}
 QListWidget#jobs::item:selected {{ background: {CARD}; border: 1px solid {CONTROL}; color: {TEXT}; }}
+QListWidget#queue {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 6px; outline: none; }}
+QListWidget#queue::item {{ padding: 8px 10px; border-bottom: 1px solid {LINE}; }}
+QListWidget#queue::item:selected {{ background: {ACCENT_TINT}; color: {TEXT}; }}
 QTextEdit#editor, QLineEdit, QComboBox, QSpinBox {{ background: {CARD}; border: 1px solid {CONTROL};
   border-radius: 6px; padding: 6px 8px; selection-background-color: {ACCENT}; }}
 QTextEdit#editor:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
@@ -818,16 +824,16 @@ class Toast(QFrame):
 
 
 class NewRecording(QDialog):
-    """Choose a recording and the few settings that matter, then transcribe."""
+    """Choose recordings with shared settings and add them to the saved queue."""
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("New recording")
-        self.setMinimumWidth(520)
+        self.setWindowTitle("Add recordings")
+        self.setMinimumWidth(620)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 22, 24, 20)
         layout.setSpacing(14)
-        layout.addWidget(label("Transcribe a recording", 18, weight=QFont.Weight.Bold))
+        layout.addWidget(label("Add recordings to the queue", 18, weight=QFont.Weight.Bold))
         layout.addWidget(
             label(
                 "German and Swiss German are written as Standard German. French and Italian "
@@ -837,14 +843,50 @@ class NewRecording(QDialog):
                 wrap=True,
             )
         )
+        self.sources = QListWidget()
+        self.sources.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        # Shorten long paths in the middle so the file names stay visible.
+        self.sources.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.sources.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sources.itemSelectionChanged.connect(self.update_sources)
+        self.empty = label(
+            "No recordings chosen yet. Choose one or more files to process them in order.",
+            13,
+            "muted",
+            wrap=True,
+        )
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setStyleSheet(
+            f"background: {CARD}; border: 1px dashed {CONTROL}; border-radius: 6px; padding: 12px;"
+        )
+        self.source_stack = QStackedWidget()
+        self.source_stack.setFixedHeight(130)
+        self.source_stack.addWidget(self.empty)
+        self.source_stack.addWidget(self.sources)
+        layout.addWidget(self.source_stack)
         pick = QHBoxLayout()
-        self.source = QLineEdit()
-        self.source.setPlaceholderText(f"Choose a recording on this {DEVICE}")
-        pick.addWidget(self.source, 1)
-        browse = button("Choose…")
+        browse = button("Choose files…")
         browse.clicked.connect(self.browse)
         pick.addWidget(browse)
+        self.remove = button("Remove selected")
+        self.remove.clicked.connect(self.remove_selected)
+        pick.addWidget(self.remove)
+        pick.addStretch()
         layout.addLayout(pick)
+        layout.addWidget(
+            label(
+                "Files run one after another with the settings below. Originals stay where they "
+                "are and are not copied; keep them available until processing finishes. Each "
+                "meeting’s Word, text, JSON and HTML outputs are saved in its own folder under:",
+                12,
+                "muted",
+                wrap=True,
+            )
+        )
+        self.output_location = label(str(home() / "jobs"), 12, "muted", wrap=True)
+        self.output_location.setTextFormat(Qt.TextFormat.PlainText)
+        self.output_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.output_location)
         options = QHBoxLayout()
         options.setSpacing(10)
         self.language = QComboBox()
@@ -874,32 +916,46 @@ class NewRecording(QDialog):
         buttons.addStretch()
         cancel = button("Cancel")
         cancel.clicked.connect(self.reject)
-        go = button("Transcribe", "primary")
+        go = button("Add to queue", "primary")
         go.clicked.connect(self.accept_if_ready)
         buttons.addWidget(cancel)
         buttons.addWidget(go)
         layout.addLayout(buttons)
+        self.update_sources()
 
     def browse(self):
-        name, _ = QFileDialog.getOpenFileName(
+        names, _ = QFileDialog.getOpenFileNames(
             self,
-            "Choose local audio",
+            "Choose local recordings",
             "",
             "Audio (*.m4a *.wav *.mp3 *.flac *.aac *.ogg *.mp4);;All files (*)",
         )
-        if name:
-            self.source.setText(name)
+        existing = {self.sources.item(i).text() for i in range(self.sources.count())}
+        for name in names:
+            if name not in existing:
+                item = QListWidgetItem(name)
+                item.setToolTip(name)
+                self.sources.addItem(item)
+                existing.add(name)
+        self.update_sources()
+
+    def remove_selected(self):
+        for item in self.sources.selectedItems():
+            self.sources.takeItem(self.sources.row(item))
+        self.update_sources()
+
+    def update_sources(self):
+        self.source_stack.setCurrentWidget(self.sources if self.sources.count() else self.empty)
+        self.remove.setEnabled(bool(self.sources.selectedItems()))
 
     def accept_if_ready(self):
-        if not self.source.text().strip():
+        if not self.sources.count():
             self.browse()
-        if self.source.text().strip():
+        if self.sources.count():
             self.accept()
 
-    def arguments(self):
-        args = [
-            "transcribe",
-            self.source.text().strip(),
+    def commands(self):
+        options = [
             "--language",
             self.language.currentData(),
             "--min-speakers",
@@ -908,8 +964,11 @@ class NewRecording(QDialog):
             str(max(self.minimum.value(), self.maximum.value())),
         ]
         if self.asr_only.isChecked():
-            args.append("--asr-only")
-        return args
+            options.append("--asr-only")
+        return [
+            ["transcribe", self.sources.item(i).text(), *options]
+            for i in range(self.sources.count())
+        ]
 
 
 # -- processing -----------------------------------------------------------------------------
@@ -1200,6 +1259,8 @@ class ProcessPage(QWidget):
         for widget in (self.resume_button, self.add_speakers_button, self.delete_button):
             resume.addWidget(widget)
         actions.addWidget(self.resume_card)
+        self.files_button = button("Files…", "hard")
+        actions.addWidget(self.files_button)
         actions.addSpacing(6)
         self.note = label("", 12, "muted", wrap=True)
         actions.addWidget(self.note, 1)
@@ -1392,14 +1453,17 @@ class Window(QMainWindow):
         self.rows, self.filter, self.stop_at, self.duration = [], False, None, 0.0
         self.playing_row = None
         self.pending, self.errors = "", ""
+        self.queue = ProcessingQueue(home())
+        self.active_entry = self.processing_root = None
+        self.queue_running = self.closing = False
+        self.pause_requested = False
+        self.queue_storage_error = None
 
         self.process = QProcess(self)
         self.process.readyReadStandardOutput.connect(self.receive)
         self.process.readyReadStandardError.connect(self.receive_errors)
         self.process.finished.connect(self.finished)
-        self.process.errorOccurred.connect(
-            lambda _: self.notice("Could not start the local worker.")
-        )
+        self.process.errorOccurred.connect(self.process_error)
         self.player = QMediaPlayer(self)
         self.audio_out = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_out)
@@ -1433,12 +1497,23 @@ class Window(QMainWindow):
         else:
             self.show_empty()
         self.set_busy(False)
+        self.refresh_queue()
+        if self.queue.recovered:
+            QTimer.singleShot(
+                0,
+                lambda: self.notice(
+                    "The saved processing queue could not be read, so it was set aside and the "
+                    f"queue starts empty. The old file is kept at:\n{self.queue.recovered}\n\n"
+                    "Your meetings and recordings are not affected. Add any unfinished "
+                    "recordings again with + New."
+                ),
+            )
 
     # -- layout ----------------------------------------------------------------------------
     def build_sidebar(self):
         side = QFrame()
         side.setObjectName("sidebar")
-        side.setFixedWidth(250)
+        side.setFixedWidth(290)
         layout = QVBoxLayout(side)
         layout.setContentsMargins(12, 16, 12, 16)
         layout.setSpacing(10)
@@ -1448,7 +1523,7 @@ class Window(QMainWindow):
         title.setAccessibleName("Meetings")
         head.addWidget(title)
         head.addStretch()
-        self.new_button = button("+ New", "small", 12, "Transcribe a new recording")
+        self.new_button = button("+ New", "small", 12, "Add recordings to the processing queue")
         self.new_button.clicked.connect(self.new_recording)
         head.addWidget(self.new_button)
         layout.addLayout(head)
@@ -1459,6 +1534,40 @@ class Window(QMainWindow):
         self.job_list.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.job_list.currentItemChanged.connect(self.select_job)
         layout.addWidget(self.job_list, 1)
+        # Hidden while empty: finished recordings leave the queue for the list above.
+        self.queue_panel = QWidget()
+        panel = QVBoxLayout(self.queue_panel)
+        panel.setContentsMargins(0, 0, 0, 0)
+        panel.setSpacing(10)
+        layout.addWidget(self.queue_panel)
+        queue_head = QHBoxLayout()
+        self.queue_heading = label("QUEUE", 11, "muted", QFont.Weight.Bold)
+        queue_head.addWidget(self.queue_heading, 1)
+        self.queue_toggle = button("Start queue", "small", 12)
+        self.queue_toggle.clicked.connect(self.toggle_queue)
+        queue_head.addWidget(self.queue_toggle)
+        panel.addLayout(queue_head)
+        self.queue_list = QListWidget()
+        self.queue_list.setObjectName("queue")
+        self.queue_list.setFont(font(13))
+        self.queue_list.setMinimumHeight(130)
+        self.queue_list.setMaximumHeight(260)
+        self.queue_list.currentItemChanged.connect(lambda *_: self.queue_selection_changed())
+        panel.addWidget(self.queue_list)
+        queue_actions = QHBoxLayout()
+        self.queue_retry = button("Retry", "small", 12)
+        self.queue_retry.clicked.connect(self.retry_queue_entry)
+        self.queue_details = button("Details…", "small", 12)
+        self.queue_details.clicked.connect(self.show_queue_error)
+        self.queue_remove = button("Remove", "small", 12, "Remove from queue; keep all files")
+        self.queue_remove.clicked.connect(self.remove_queue_entry)
+        queue_actions.addWidget(self.queue_retry)
+        queue_actions.addWidget(self.queue_details)
+        queue_actions.addWidget(self.queue_remove)
+        queue_actions.addStretch()
+        panel.addLayout(queue_actions)
+        self.queue_note = label("", 12, "muted", wrap=True)
+        panel.addWidget(self.queue_note)
         layout.addWidget(
             label(f"Offline. Audio and text stay on this {DEVICE}.", 12, "muted", wrap=True)
         )
@@ -1496,8 +1605,8 @@ class Window(QMainWindow):
         self.speakers_button = button("Speakers…", tip="Replace Speaker A, B… with names")
         self.speakers_button.clicked.connect(self.rename_speakers)
         header.addWidget(self.speakers_button)
-        self.folder_button = button("Open folder")
-        self.folder_button.clicked.connect(self.open_export_folder)
+        self.folder_button = button("Files…", tip="Source recording and saved output locations")
+        self.folder_button.clicked.connect(self.show_files)
         header.addWidget(self.folder_button)
         self.delete_button = TrashButton("Delete this meeting", framed=True)
         self.delete_button.clicked.connect(lambda: self.ask_delete(self.root))
@@ -1573,10 +1682,11 @@ class Window(QMainWindow):
         self.process_page = page = ProcessPage()
         self.pause_button, self.resume_card = page.pause_button, page.resume_card
         self.resume_button, self.add_speakers_button = page.resume_button, page.add_speakers_button
-        self.pause_button.clicked.connect(lambda: stop_supervisor(self.process))
+        self.pause_button.clicked.connect(self.pause_queue)
         self.resume_button.clicked.connect(lambda: self.resume_job(False))
         self.add_speakers_button.clicked.connect(lambda: self.resume_job(True))
         page.delete_button.clicked.connect(lambda: self.ask_delete(self.root))
+        page.files_button.clicked.connect(self.show_files)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(review)
@@ -1961,6 +2071,9 @@ class Window(QMainWindow):
         # Save the open edit first so it survives either way, including after Undo.
         if not self.save_selected():
             return
+        if self.queue.find(root, {"waiting", "paused", "running", "failed"}):
+            self.notice("Remove this meeting from the queue before deleting it.")
+            return
         if not self.confirm_delete(name):
             return
         if current:
@@ -2082,12 +2195,15 @@ class Window(QMainWindow):
         self.pages.setCurrentWidget(
             self.process_page if busy or unfinished else self.pages.widget(0)
         )
-        self.new_button.setEnabled(not busy)
+        self.new_button.setEnabled(not self.closing and not self.queue_storage_error)
         self.job_list.setEnabled(not busy)
         self.resume_button.setEnabled(not busy)
         self.add_speakers_button.setEnabled(not busy)
         self.export_button.setEnabled(not busy and has_text)
-        self.folder_button.setEnabled(not busy and has_text)
+        self.folder_button.setEnabled(self.root is not None)
+        self.process_page.files_button.setEnabled(
+            self.processing_root is not None if busy else self.root is not None
+        )
         self.speakers_button.setEnabled(not busy and has_text)
         self.delete_button.setEnabled(not busy and self.root is not None)
         self.delete_button.setVisible(self.root is not None)
@@ -2100,23 +2216,224 @@ class Window(QMainWindow):
             return
         dialog = NewRecording(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.begin(dialog.arguments())
+            self.enqueue(dialog.commands())
 
     def resume_job(self, add_speakers):
-        if self.root:
-            self.begin(["resume", str(self.root), *(["--add-speakers"] if add_speakers else [])])
+        if not self.root or self.is_busy() or self.queue_storage_error:
+            return
+        args = ["resume", str(self.root), *(["--add-speakers"] if add_speakers else [])]
+        existing = self.queue.find(self.root, {"waiting", "paused", "failed"})
+
+        def write():
+            # Resume means this meeting: put it first, ahead of other paused recordings.
+            if not existing:
+                added = self.queue.add([args])
+                return self.queue.prioritize(added[0]) if added else None
+            changes = {"state": "waiting", "error": ""} if existing["state"] == "failed" else {}
+            if add_speakers:
+                changes["args"] = args
+            return self.queue.prioritize(existing["id"], **changes)
+
+        if self.queue_write(write) is None:
+            return
+        self.queue_running = True
+        self.start_next()
+
+    def show_files(self):
+        root = self.processing_root if self.is_busy() else self.root
+        if root:
+            FilesDialog(self, root).exec()
+
+    def selected_queue_entry(self):
+        item = self.queue_list.currentItem()
+        return next(
+            (
+                e
+                for e in self.queue.entries
+                if item and e["id"] == item.data(Qt.ItemDataRole.UserRole)
+            ),
+            None,
+        )
+
+    def queue_write(self, operation):
+        if self.queue_storage_error:
+            return None
+        try:
+            return operation()
+        except OSError as exc:
+            # Fail closed: a worker must never start unless its queue state is durable.
+            self.queue_storage_error = str(exc)
+            self.queue_running = False
+            self.pause_requested = True
+            self.new_button.setEnabled(False)
+            if self.is_busy():
+                stop_supervisor(self.process)
+            self.refresh_queue()
+            self.notice(
+                f"Could not save the processing queue: {exc}\n\n"
+                "Processing is paused. Make the app data folder writable, then reopen the app "
+                "to recover the last saved queue. Recording checkpoints are kept."
+            )
+            return None
+
+    def refresh_queue(self):
+        selected = self.selected_queue_entry()
+        selected_id = selected["id"] if selected else None
+        self.queue_list.clear()
+        for entry in self.queue.entries:
+            source = entry["args"][1]
+            if entry["args"][0] == "resume":
+                try:
+                    source = read_config(Path(source))["input"]
+                except (OSError, ValueError):
+                    pass
+            item = QListWidgetItem(f"{Path(source).name}\n{entry['state'].capitalize()}")
+            item.setData(Qt.ItemDataRole.UserRole, entry["id"])
+            item.setForeground(
+                QColor({"running": ACCENT, "failed": DANGER}.get(entry["state"], TEXT))
+            )
+            item.setToolTip(source + ("\n" + entry["error"] if entry["error"] else ""))
+            self.queue_list.addItem(item)
+            if entry["id"] == selected_id:
+                self.queue_list.setCurrentItem(item)
+        remaining = sum(e["state"] in {"waiting", "paused", "running"} for e in self.queue.entries)
+        self.queue_panel.setVisible(bool(self.queue.entries) or bool(self.queue_storage_error))
+        self.queue_heading.setText(f"QUEUE · {remaining} left")
+        self.queue_toggle.setText("Pause queue" if self.queue_running else "Resume queue")
+        self.queue_toggle.setEnabled(
+            bool(remaining) and not self.closing and not self.queue_storage_error
+        )
+        self.queue_note.setText(
+            "One recording at a time. You can add more while processing."
+            if self.queue_running
+            else "Queue saved. Resume to continue. Originals must stay available."
+            if remaining
+            else "Select a failed recording to see why, retry it or remove it. Files are kept."
+        )
+        if self.queue_storage_error:
+            self.queue_note.setText(
+                "Queue could not be saved. Processing paused; reopen to recover."
+            )
+        self.queue_selection_changed()
+
+    def queue_selection_changed(self):
+        entry = self.selected_queue_entry()
+        self.queue_retry.setEnabled(
+            bool(entry and entry["state"] == "failed" and not self.queue_storage_error)
+        )
+        self.queue_remove.setEnabled(
+            bool(entry and entry["state"] != "running" and not self.queue_storage_error)
+        )
+        self.queue_details.setEnabled(bool(entry and entry["error"]))
+
+    def show_queue_error(self):
+        entry = self.selected_queue_entry()
+        if entry and entry["error"]:
+            self.notice(entry["error"])
+
+    def enqueue(self, commands):
+        if self.closing or self.queue_storage_error or not self.save_selected():
+            return
+        added = self.queue_write(lambda: self.queue.add(commands))
+        if added is None:
+            return
+        self.refresh_queue()
+        if not added:
+            self.flash("These recordings are already queued. Resume the queue to continue.")
+            return
+        # Adding to a deliberately paused/restored queue must not silently resume it.
+        if (
+            not self.active_entry
+            and not any(e["state"] == "paused" for e in self.queue.entries)
+            and len(added) == sum(e["state"] == "waiting" for e in self.queue.entries)
+        ):
+            self.queue_running = True
+        self.start_next()
+
+    def toggle_queue(self):
+        if self.queue_storage_error:
+            return
+        if self.queue_running:
+            self.pause_queue()
+        elif self.save_selected():
+            self.queue_running = True
+            self.start_next()
+
+    def pause_queue(self):
+        self.queue_running = False
+        self.pause_requested = True
+        self.refresh_queue()
+        if self.is_busy():
+            self.pause_button.setEnabled(False)
+            stop_supervisor(self.process)
+
+    def retry_queue_entry(self):
+        entry = self.selected_queue_entry()
+        if entry and entry["state"] == "failed":
+            self.queue_write(lambda: self.queue.retry(entry["id"]))
+            self.refresh_queue()
+            self.start_next()
+
+    def remove_queue_entry(self):
+        entry = self.selected_queue_entry()
+        if entry and entry["state"] != "running":
+            self.queue_write(lambda: self.queue.remove(entry["id"]))
+            self.refresh_queue()
+
+    def start_next(self):
+        if (
+            self.closing
+            or self.queue_storage_error
+            or not self.queue_running
+            or self.active_entry
+            or self.is_busy()
+        ):
+            self.refresh_queue()
+            return
+        if not self.save_selected():
+            self.queue_running = False
+            self.refresh_queue()
+            return
+        entry = self.queue_write(self.queue.next)
+        if entry is None:
+            self.queue_running = False
+            self.refresh_queue()
+            return
+        self.active_entry = entry["id"]
+        self.pause_requested = False
+        args = entry["args"]
+        self.processing_root = Path(entry["job"]) if entry["job"] else None
+        if self.processing_root:
+            args = [
+                "resume",
+                str(self.processing_root),
+                *(["--add-speakers"] if "--add-speakers" in args else []),
+            ]
+        try:
+            self.begin(args)
+        except (OSError, ValueError, KeyError) as exc:
+            self.errors = str(exc)
+            self.processing_root = None
+            self.finished(1, QProcess.ExitStatus.NormalExit)
+        self.refresh_queue()
 
     def begin(self, args):
-        if not self.save_selected():
-            return
         self.player.stop()
         self.pending, self.errors = "", ""
         if args[0] == "resume":
-            self.process_page.start(self.root, resuming=True)
+            self.process_page.start(Path(args[1]), resuming=True)
         else:
             self.process_page.start(name=Path(args[1]).stem)
         self.set_busy(True)
+        environment = QProcessEnvironment.systemEnvironment()
+        environment.insert("DIARIZE_GUI_PARENT_PID", str(os.getpid()))
+        self.process.setProcessEnvironment(environment)
         self.process.start(sys.executable, ["-m", "meeting_protocol.cli", *args])
+
+    def process_error(self, error):
+        if error == QProcess.ProcessError.FailedToStart and self.active_entry:
+            self.errors = "Could not start the local worker: " + self.process.errorString()
+            self.finished(1, QProcess.ExitStatus.CrashExit)
 
     def receive(self):
         self.pending += bytes(self.process.readAllStandardOutput()).decode(
@@ -2132,7 +2449,17 @@ class Window(QMainWindow):
 
     def handle_event(self, event):
         if "job" in event:
-            self.root = Path(event["job"])
+            self.clear_rows()
+            self.transcript = None
+            self.root = self.processing_root = Path(event["job"])
+            if self.active_entry:
+                self.queue_write(
+                    lambda: self.queue.update(
+                        self.active_entry, job=str(self.processing_root.resolve())
+                    )
+                )
+            self.refresh_jobs()
+            self.process_page.files_button.setEnabled(True)
             # Re-read even when resuming: adding speakers has just rewritten the settings.
             self.process_page.load(self.root)
             self.process_page.refresh()
@@ -2149,29 +2476,65 @@ class Window(QMainWindow):
         self.receive()
         self.receive_errors()
         self.process_page.stop()
-        root = self.root
-        self.root = None
-        self.refresh_jobs()
-        if root:
+        root = self.processing_root
+        queued = self.active_entry is not None
+        state = None
+        if queued:
+            state = (
+                "done"
+                if code == 0 and status == QProcess.ExitStatus.NormalExit
+                else ("paused" if self.pause_requested or self.closing else "failed")
+            )
+            entry_id = self.active_entry
+            if state == "done":
+                self.queue_write(lambda: self.queue.complete(entry_id))
+            else:
+                error = (
+                    self.errors
+                    or f"Local worker stopped (exit code {code}). Retry to reuse saved checkpoints."
+                )
+                self.queue_write(
+                    lambda: self.queue.update(
+                        entry_id, state=state, error=error if state == "failed" else ""
+                    )
+                )
+        self.active_entry = self.processing_root = None
+        if root and (root / "job.json").is_file():
+            self.root = None
             self.open_job(root)
+        elif self.root is None:
+            self.show_empty()
         self.refresh_jobs()
         self.set_busy(False)
-        if code != 0:
-            self.flash("Stopped. Completed work is saved; resume to continue.")
-            if code != 130:
+        self.refresh_queue()
+        if state == "paused":
+            self.flash("Queue paused. Saved checkpoints are kept; resume to continue.")
+        elif code != 0:
+            self.flash("Recording stopped. Saved checkpoints are kept; see the queue to retry.")
+            # A failed file must not block an unattended batch with a modal dialog.
+            if not queued and code != 130:
                 self.notice(self.errors or "The worker stopped. Resume to retry saved work.")
+        if queued and not self.closing:
+            QTimer.singleShot(0, self.start_next)
 
     def closeEvent(self, event):
         if not self.save_selected():
             event.ignore()
             return
+        # Set this before waiting: finished() is delivered during waitForFinished().
+        self.closing = True
+        self.queue_running = False
+        self.pause_requested = True
         if self.is_busy():
             stop_supervisor(self.process)
             if not self.process.waitForFinished(7000):
+                self.closing = False
+                self.refresh_queue()
                 event.ignore()
                 self.notice("Waiting for the worker to stop safely. Try closing again shortly.")
                 return
         self.player.stop()
+        self.queue.close()
         event.accept()
 
 
@@ -2182,6 +2545,14 @@ def launch(initial=None):
     set_app_icon(app)
     app.setFont(font(14))
     app.setStyleSheet(STYLE)
-    window = Window(initial)
+    try:
+        window = Window(initial)
+    except QueueInUse:
+        QMessageBox.information(
+            None,
+            "Meeting Protocol",
+            "Meeting Protocol is already open. Switch to the open window to continue.",
+        )
+        sys.exit(0)
     window.show()
     sys.exit(app.exec())

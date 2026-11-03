@@ -38,23 +38,46 @@ From this folder:
 
 Or double-click **Open Meeting Protocol.command** in Finder. The launcher uses this project's installed environment. The sample job appears in the left sidebar.
 
-The window lists meetings on the left and puts the player and the transcript in the middle. Click a time to play from there, click a turn's text to correct it, and use **To check** to see only the turns that still need a listen. With **Auto-play** on, clicking a turn plays it; with it off, use **Play this turn**. Click **+ New** to transcribe another recording. The earlier windows are still available with `./diarize gui-classic` and `./diarize gui-simple` (or the launchers in `launchers/`).
+The window lists meetings on the left and puts the player and the transcript in the middle. Click a time to play from there, click a turn's text to correct it, and use **To check** to see only the turns that still need a listen. With **Auto-play** on, clicking a turn plays it; with it off, use **Play this turn**. Click **+ New** to add one or more recordings to the processing queue. The earlier windows are still available with `./diarize gui-classic` and `./diarize gui-simple` (or the launchers in `launchers/`).
 
-Choose a local recording, set the speaker range if known, and click **Transcribe recording**. Select a transcript row to seek to that passage, then use **Play / pause**. Edit the text or speaker label and save. Corrections regenerate the exports without running the models again. Changes are also saved when switching turns. Closing a running app pauses its processing and preserves checkpoints.
+Choose local recordings, set the shared language and speaker range if known, and click **Add to queue**. Files are processed one after another. Select a transcript row to seek to that passage, then use **Play / pause**. Edit the text or speaker label and save. Corrections regenerate the exports without running the models again. Changes are also saved when switching turns. Closing a running app pauses the queue and preserves checkpoints. Reopen the app and click **Resume queue** to continue.
 
 Speaker A/B labels are anonymous, consistent within the inferred meeting-wide clustering. They are not real-person identification. Uncertain words, overlaps and speaker transitions are flagged for listening. If a speaker cannot be assigned, a draft uses **Speaker Unknown**; assign it during review. The app never invents an identity to make the output look complete.
 
 To use real names, click **Speakers…** and type a name next to each label, for example `Raphael Winkler` for Speaker A. The name replaces the label in every turn and in all exports, so the output reads `Raphael Winkler: I am great.` Giving two speakers the same name merges them. Unknown turns are assigned one by one.
 
+### Process several recordings
+
+Click **+ New → Choose files…**, select several recordings, and click **Add to queue**. Language, speaker range and text-only settings apply to all files in that selection. The first batch starts immediately; only one recording is processed at a time. You can use **+ New** again while it runs to add more recordings at the end. Active or waiting copies of the same file with the same settings are not added twice.
+
+The sidebar queue shows **Waiting**, **Running**, **Paused** or **Failed** for each recording. A recording that finishes leaves the queue and stays in the meetings list; once every recording is done, the queue is empty and hidden. **Pause queue** saves the current recording's checkpoints and stops before starting another file. **Resume queue** resumes the earliest paused or waiting recording. A failed recording does not stop later files: select it and use **Details…** to inspect the error, then **Retry** after fixing the cause. Retry returns it to its original queue position; if the queue has stopped, click **Resume queue**. Select a non-running entry and click **Remove** to remove it from the queue; this does not delete its recording, meeting or outputs. **Resume** on an unfinished meeting runs that meeting next, ahead of other paused recordings, and then continues the queue.
+
+The queue and its settings are saved in `queue.json` in the app data folder. Reopening the app always waits for **Resume queue**, including after an interruption. If `queue.json` cannot be read, the app says so, keeps the file as `queue.json.bad` and starts with an empty queue; meetings are not affected. Adding files to a paused or restored queue does not resume it. Keep the app open while the queue runs. Transcript review and switching meetings become available when processing is paused or the batch finishes. Only one main app window can own the queue for a given data folder; opening the app a second time shows a message instead of a second window; the CLI and earlier windows keep their existing single-file interfaces.
+
+### Where recordings and outputs live
+
+**Original recordings stay exactly where you selected them.** The app references their paths; it does not import a copy of the original, move it, modify it or delete it. Keep originals at those paths for playback and resuming processing. If a recording moves or changes, resume fails rather than processing a different file. Decoded working audio is stored separately with the meeting's checkpoints.
+
+Click **Files…** on a meeting or its processing screen to see selectable paths and open the original's folder, saved outputs folder or app data folder. The add-recordings dialog also shows where meetings will be saved. Each meeting has its own folder under `jobs/JOB_ID/`, containing working files, corrections and an `exports/` folder. After processing finishes, that folder contains `transcript.docx`, `transcript.txt`, `transcript.json` and `review.html`. Saving corrections updates these files and retains earlier export revisions. **Export…** saves an additional copy to a destination you choose; later corrections update the app's saved outputs, not those separately exported copies.
+
+The app data folder is:
+
+- **Installed Mac app:** `~/Library/Application Support/Meeting Protocol`
+- **Installed Windows app:** `%LOCALAPPDATA%\Meeting Protocol`
+- **From this project:** `.local/` inside the project by default
+- **Custom location:** the directory set by `DIARIZE_HOME`
+
+The actual paths are always shown in **Files…**, including when a custom location is used.
+
 ### Delete a meeting
 
-Hover a meeting in the sidebar, or open it, and click the bin icon (also next to **Open folder**). After you confirm, the meeting's folder — transcript, corrections, checkpoints and saved exports — moves to the macOS Trash, and **Undo** appears for a few seconds. Afterwards you can still use **Put Back** in the Trash. The original recording and files you exported elsewhere are never touched. Deleting is unavailable while processing runs, and a job that a terminal `./diarize` command is still using refuses to move.
+Hover a meeting in the sidebar, or open it, and click the bin icon (also next to **Files…**). After you confirm, the meeting's folder — transcript, corrections, checkpoints and saved exports — moves to the macOS Trash, and **Undo** appears for a few seconds. Afterwards you can still use **Put Back** in the Trash. The original recording and files you exported elsewhere are never touched. Deleting is unavailable while processing runs, and a job that a terminal `./diarize` command is still using refuses to move.
 
 ### Export your corrected transcript
 
 Click **Export…** below the transcript and choose **Word document (.docx)**, plain text, review HTML or structured JSON. Select the destination in the Save dialog. Any pending editor correction is saved before export. The Word file contains bold speaker labels followed by the text, with no timestamps, confidence labels or additional commentary.
 
-**Open export folder** opens the meeting's saved outputs in Finder. Every saved correction updates `transcript.docx`, `transcript.txt`, `transcript.json` and `review.html`; previous revisions remain available. The exports always use the saved correction history, without rerunning transcription. To see these buttons after updating an already running app, save your edit and restart the app.
+**Files… → Open outputs folder** opens the meeting's saved outputs in Finder or File Explorer. Every saved correction updates `transcript.docx`, `transcript.txt`, `transcript.json` and `review.html`; previous revisions remain available. The exports always use the saved correction history, without rerunning transcription. To see these buttons after updating an already running app, save your edit and restart the app.
 
 ## Command line
 

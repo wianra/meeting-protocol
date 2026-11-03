@@ -49,3 +49,21 @@ Next useful validation: review the sample locally, then run a representative hou
 - The from-source FFmpeg 9.0.2 (LGPL, static) links only system libraries. Using the app's exact decode arguments, its 16 kHz mono output was byte-identical to Homebrew FFmpeg for m4a/AAC, mp3, wav, flac, ogg/opus, webm/opus, mp4 and mov with H.264 video plus AAC, and channel selection (`pan`) on mono and stereo input.
 - The app copied out of the mounted DMG transcribed and diarised an mp4 with video while Homebrew, `/usr/local`, the whole project folder, the system Python framework and uv's Python were blocked.
 - Not yet verified: installing from a browser-downloaded (quarantined) DMG, the Gatekeeper dialog for this ad-hoc signature, recordings in TCC-protected folders such as Documents and Downloads, and a Mac that has never had developer tools installed.
+
+## Sequential recording queue — 3 November 2026
+
+The main desktop window now supports multiple-file selection and a durable FIFO queue. The CLI and inference pipeline continue to operate on one recording per invocation.
+
+- All **51 tests** pass, including Qt scheduling, adding recordings during processing, continuing after failure before a job is created, worker launch failure, missing resume jobs, pause/resume races, close without advancing, explicit recovery after restart, resuming the saved job rather than creating a replacement, duplicate suppression, removal without deleting files, queue ownership and atomic-write failure.
+- Ruff lint and formatting checks pass. A subprocess check verifies that the Unix desktop supervisor exits when its GUI parent is gone. The Windows implementation uses a process handle and exits so that the existing worker job object closes; this new Windows path has not been exercised on a Windows machine.
+- A local offscreen smoke check launched **two real CLI workers under the macOS network-denial sandbox**, each with an intentionally missing synthetic input path. Both failed with the expected missing-audio error, and the queue advanced and retained both errors without a modal dialog. No existing recordings or jobs were changed.
+- Rendered and inspected the [processing queue](images/processing-queue.png), [multiple-file dialog](images/add-recordings.png) and [file locations](images/recording-files.png) using synthetic recordings and preview text. The Files dialog distinguishes original-file references, decoded working audio, automatic exports and separately exported copies.
+
+This update does not change the model implementations. The queue scheduling tests use a controlled worker boundary; the new smoke check validates real worker launch and failure handling, not a new end-to-end multi-recording inference benchmark. Native Windows UI and a packaged build remain to be checked for this update.
+
+Review follow-up (same day):
+
+- Ran **three real recordings** (clips of `audio.m4a`) through the queue with the installed models under the macOS network sandbox. The third was added while the first ran. All three finished in order and wrote Word, text, JSON and HTML exports. The queue was then empty and hidden. Pausing mid-file and resuming reused the same meeting folder.
+- Force-killed the window (`kill -9`) mid-file. The supervisor and its stage worker exited within 1.5 s; on reopen the entry was **Paused** and did not start by itself.
+- Fixed: a second app launch and an unreadable `queue.json` no longer crash startup; **Resume** on a meeting runs that meeting rather than the earliest paused entry; queue lookups compare resolved paths; finished entries leave the queue; a deliberate pause no longer reports a stop; the Files dialog no longer clips wrapped paths.
+- **56 tests** pass.
