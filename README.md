@@ -15,6 +15,8 @@ Requires a Mac with Apple Silicon (M1 or later) and macOS 14 or later, plus abou
 
 No Python, Homebrew, FFmpeg or Hugging Face account is needed. Meetings and models are stored in `~/Library/Application Support/Meeting Protocol`. To uninstall, delete the app and that folder.
 
+To update, download the new DMG and drag **Meeting Protocol** onto **Applications** again, choosing **Replace**. Meetings, corrections and models are kept; the speech model is not downloaded again. Because the app is not yet signed, macOS asks for **Open Anyway** once more after each update.
+
 ## Install on Windows
 
 Requires Windows 10 or 11 (64-bit) and about 6 GB of free space.
@@ -25,6 +27,12 @@ Requires Windows 10 or 11 (64-bit) and about 6 GB of free space.
 4. Click **Download** to fetch the speech model (3.1 GB, one time).
 
 Meetings and models are stored in `%LOCALAPPDATA%\Meeting Protocol`. To uninstall, delete the extracted folder and that folder.
+
+To update, close the app, delete the old extracted **MeetingProtocol** folder and extract the new zip in its place. Meetings, corrections and models are kept in `%LOCALAPPDATA%\Meeting Protocol`.
+
+### Update notices
+
+The installed app asks once, in the sidebar, whether it may check for updates. If you agree, each time the app starts it asks GitHub for the latest release number. When a newer version exists, the sidebar shows it with a **Download…** link to the release page. Change the choice any time with **Check for updates at start** in the sidebar. See [Privacy](#privacy) for what the check shares.
 
 Differences from the Mac app: transcription runs on the CPU with faster-whisper, so expect roughly one to two times the meeting length; and networking is blocked by the app itself, not by the operating system (see Privacy).
 
@@ -159,7 +167,7 @@ Adjacent fragments from the same speaker are merged. Turn text is written as spo
 
 Audio processing, review, status and export run inside a **macOS sandbox that denies networking**. The program verifies that a loopback connection is denied; it does not merely set an offline flag. Inference loads verified local model paths. Missing or corrupted model files fail locally rather than downloading during processing. Telemetry is disabled before ML imports.
 
-Only `login` and `provision` use network access. They authenticate and download model files; those command paths do not read recordings. Credentials are stored locally under `.local/huggingface/` and are not written into jobs. Processing logs report stages and counts rather than transcript text.
+Only `login`, `provision` and the optional update check use network access. The update check runs only in the installed app and only after you agree. It is a separate process started before the window enters the sandbox; it requests the latest release number from the GitHub API, so GitHub sees your IP address and app version, and it saves the answer to `update.json` in the app data folder. It sends nothing about recordings, transcripts or meetings, and the window itself stays without network access. They authenticate and download model files; those command paths do not read recordings. Credentials are stored locally under `.local/huggingface/` and are not written into jobs. Processing logs report stages and counts rather than transcript text.
 
 The application cannot control system backups or another program's folder synchronisation. Keep the project/data directory outside iCloud, Dropbox or similar synced locations. To choose a different local data directory, set `DIARIZE_HOME` before every invocation, including provisioning. Changing it does not automatically move existing models or jobs.
 
