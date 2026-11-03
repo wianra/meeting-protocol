@@ -663,3 +663,26 @@ def test_add_dialog_shows_placeholder_until_files_are_chosen(tmp_path, monkeypat
     dialog.remove_selected()
     assert dialog.source_stack.currentWidget() is dialog.empty
     dialog.close()
+
+
+def test_resume_retries_a_failed_meeting_instead_of_duplicating_it(tmp_path, monkeypatch):
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    root = make_job(tmp_path, "broken", with_text=False)
+    window.enqueue([["transcribe", str(tmp_path / "broken.wav")]])
+    window.handle_event({"job": str(root), "status": "running"})
+    window.errors = "Model crashed"
+    finish_worker(window, worker, 1)
+    app.processEvents()
+    assert [e["state"] for e in window.queue.entries] == ["failed"]
+    notices = []
+    monkeypatch.setattr(window, "notice", notices.append)
+    window.ask_delete(root)
+    assert "Remove this meeting from the queue" in notices[0] and root.exists()
+
+    window.open_job(root)
+    window.resume_job(False)
+    assert [e["state"] for e in window.queue.entries] == ["running"]
+    assert worker["starts"][-1] == ["-m", "meeting_protocol.cli", "resume", str(root)]
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    window.close()

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from ..jobs import read_config
@@ -71,7 +71,11 @@ class FilesDialog(QDialog):
         layout.addLayout(actions)
         # Wrapped paths and notes need more height than the dialog's default size hint.
         layout.activate()
-        self.setMinimumHeight(layout.totalHeightForWidth(self.minimumWidth()))
+        height = layout.totalHeightForWidth(self.minimumWidth())
+        screen = (parent.screen() if parent else None) or QGuiApplication.primaryScreen()
+        if screen:
+            height = min(height, screen.availableGeometry().height() - 60)
+        self.setMinimumHeight(height)
 
     @staticmethod
     def section(layout, title, path):
