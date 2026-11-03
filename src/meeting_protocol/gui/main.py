@@ -60,7 +60,7 @@ from ..export import (
 )
 from ..jobs import read_config, resolve_job
 from ..privacy import home, require_offline
-from ..queue import ProcessingQueue
+from ..queue import ProcessingQueue, QueueInUse
 from ..storage import Store, lock
 from .common import DEVICE, restore_job, set_app_icon, trash_job
 from .files import FilesDialog
@@ -844,43 +844,49 @@ class NewRecording(QDialog):
             )
         )
         self.sources = QListWidget()
-        self.sources.setMinimumHeight(130)
         self.sources.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        layout.addWidget(self.sources)
+        # Shorten long paths in the middle so the file names stay visible.
+        self.sources.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.sources.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sources.itemSelectionChanged.connect(self.update_sources)
+        self.empty = label(
+            "No recordings chosen yet. Choose one or more files to process them in order.",
+            13,
+            "muted",
+            wrap=True,
+        )
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setStyleSheet(
+            f"background: {CARD}; border: 1px dashed {CONTROL}; border-radius: 6px; padding: 12px;"
+        )
+        self.source_stack = QStackedWidget()
+        self.source_stack.setFixedHeight(130)
+        self.source_stack.addWidget(self.empty)
+        self.source_stack.addWidget(self.sources)
+        layout.addWidget(self.source_stack)
         pick = QHBoxLayout()
         browse = button("Choose files…")
         browse.clicked.connect(self.browse)
         pick.addWidget(browse)
-        remove = button("Remove selected")
-        remove.clicked.connect(self.remove_selected)
-        pick.addWidget(remove)
+        self.remove = button("Remove selected")
+        self.remove.clicked.connect(self.remove_selected)
+        pick.addWidget(self.remove)
         pick.addStretch()
         layout.addLayout(pick)
         layout.addWidget(
             label(
-                "Files run one after another, using the settings below. Originals stay in place; "
-                "no copy of the original is imported. Decoded working audio is saved with each "
-                "meeting. Keep originals available until processing "
-                "finishes, and for later playback or resume.",
-                13,
-                "muted",
-                wrap=True,
-            )
-        )
-        layout.addWidget(label("Saved outputs: one folder per meeting under", 12, "muted"))
-        self.output_location = label(str(home() / "jobs"), 12, "muted", wrap=True)
-        self.output_location.setTextFormat(Qt.TextFormat.PlainText)
-        self.output_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.output_location)
-        layout.addWidget(
-            label(
-                "Each meeting’s exports folder contains Word, text, JSON and HTML. "
-                "Export… lets you save a copy elsewhere.",
+                "Files run one after another with the settings below. Originals stay where they "
+                "are and are not copied; keep them available until processing finishes. Each "
+                "meeting’s Word, text, JSON and HTML outputs are saved in its own folder under:",
                 12,
                 "muted",
                 wrap=True,
             )
         )
+        self.output_location = label(str(home() / "jobs"), 12, "muted", wrap=True)
+        self.output_location.setTextFormat(Qt.TextFormat.PlainText)
+        self.output_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.output_location)
         options = QHBoxLayout()
         options.setSpacing(10)
         self.language = QComboBox()
@@ -915,6 +921,7 @@ class NewRecording(QDialog):
         buttons.addWidget(cancel)
         buttons.addWidget(go)
         layout.addLayout(buttons)
+        self.update_sources()
 
     def browse(self):
         names, _ = QFileDialog.getOpenFileNames(
@@ -930,10 +937,16 @@ class NewRecording(QDialog):
                 item.setToolTip(name)
                 self.sources.addItem(item)
                 existing.add(name)
+        self.update_sources()
 
     def remove_selected(self):
         for item in self.sources.selectedItems():
             self.sources.takeItem(self.sources.row(item))
+        self.update_sources()
+
+    def update_sources(self):
+        self.source_stack.setCurrentWidget(self.sources if self.sources.count() else self.empty)
+        self.remove.setEnabled(bool(self.sources.selectedItems()))
 
     def accept_if_ready(self):
         if not self.sources.count():
@@ -1485,6 +1498,16 @@ class Window(QMainWindow):
             self.show_empty()
         self.set_busy(False)
         self.refresh_queue()
+        if self.queue.recovered:
+            QTimer.singleShot(
+                0,
+                lambda: self.notice(
+                    "The saved processing queue could not be read, so it was set aside and the "
+                    f"queue starts empty. The old file is kept at:\n{self.queue.recovered}\n\n"
+                    "Your meetings and recordings are not affected. Add any unfinished "
+                    "recordings again with + New."
+                ),
+            )
 
     # -- layout ----------------------------------------------------------------------------
     def build_sidebar(self):
@@ -1511,20 +1534,26 @@ class Window(QMainWindow):
         self.job_list.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.job_list.currentItemChanged.connect(self.select_job)
         layout.addWidget(self.job_list, 1)
+        # Hidden while empty: finished recordings leave the queue for the list above.
+        self.queue_panel = QWidget()
+        panel = QVBoxLayout(self.queue_panel)
+        panel.setContentsMargins(0, 0, 0, 0)
+        panel.setSpacing(10)
+        layout.addWidget(self.queue_panel)
         queue_head = QHBoxLayout()
         self.queue_heading = label("QUEUE", 11, "muted", QFont.Weight.Bold)
         queue_head.addWidget(self.queue_heading, 1)
         self.queue_toggle = button("Start queue", "small", 12)
         self.queue_toggle.clicked.connect(self.toggle_queue)
         queue_head.addWidget(self.queue_toggle)
-        layout.addLayout(queue_head)
+        panel.addLayout(queue_head)
         self.queue_list = QListWidget()
         self.queue_list.setObjectName("queue")
         self.queue_list.setFont(font(13))
         self.queue_list.setMinimumHeight(130)
         self.queue_list.setMaximumHeight(260)
         self.queue_list.currentItemChanged.connect(lambda *_: self.queue_selection_changed())
-        layout.addWidget(self.queue_list)
+        panel.addWidget(self.queue_list)
         queue_actions = QHBoxLayout()
         self.queue_retry = button("Retry", "small", 12)
         self.queue_retry.clicked.connect(self.retry_queue_entry)
@@ -1536,9 +1565,9 @@ class Window(QMainWindow):
         queue_actions.addWidget(self.queue_details)
         queue_actions.addWidget(self.queue_remove)
         queue_actions.addStretch()
-        layout.addLayout(queue_actions)
+        panel.addLayout(queue_actions)
         self.queue_note = label("", 12, "muted", wrap=True)
-        layout.addWidget(self.queue_note)
+        panel.addWidget(self.queue_note)
         layout.addWidget(
             label(f"Offline. Audio and text stay on this {DEVICE}.", 12, "muted", wrap=True)
         )
@@ -2042,10 +2071,7 @@ class Window(QMainWindow):
         # Save the open edit first so it survives either way, including after Undo.
         if not self.save_selected():
             return
-        if any(
-            e["job"] == str(root) and e["state"] in {"waiting", "paused", "running"}
-            for e in self.queue.entries
-        ):
+        if self.queue.find(root, {"waiting", "paused", "running", "failed"}):
             self.notice("Remove this meeting from the queue before deleting it.")
             return
         if not self.confirm_delete(name):
@@ -2193,25 +2219,25 @@ class Window(QMainWindow):
             self.enqueue(dialog.commands())
 
     def resume_job(self, add_speakers):
-        if self.root and not self.is_busy() and not self.queue_storage_error:
-            args = ["resume", str(self.root), *(["--add-speakers"] if add_speakers else [])]
-            existing = next(
-                (
-                    e
-                    for e in self.queue.entries
-                    if e["job"] == str(self.root) and e["state"] in {"waiting", "paused"}
-                ),
-                None,
-            )
-            if existing:
-                if add_speakers:
-                    self.queue_write(lambda: self.queue.update(existing["id"], args=args))
-            else:
-                self.enqueue([args])
-            if self.queue_storage_error:
-                return
-            self.queue_running = True
-            self.start_next()
+        if not self.root or self.is_busy() or self.queue_storage_error:
+            return
+        args = ["resume", str(self.root), *(["--add-speakers"] if add_speakers else [])]
+        existing = self.queue.find(self.root, {"waiting", "paused", "failed"})
+
+        def write():
+            # Resume means this meeting: put it first, ahead of other paused recordings.
+            if not existing:
+                added = self.queue.add([args])
+                return self.queue.prioritize(added[0]) if added else None
+            changes = {"state": "waiting", "error": ""} if existing["state"] == "failed" else {}
+            if add_speakers:
+                changes["args"] = args
+            return self.queue.prioritize(existing["id"], **changes)
+
+        if self.queue_write(write) is None:
+            return
+        self.queue_running = True
+        self.start_next()
 
     def show_files(self):
         root = self.processing_root if self.is_busy() else self.root
@@ -2264,15 +2290,14 @@ class Window(QMainWindow):
             item = QListWidgetItem(f"{Path(source).name}\n{entry['state'].capitalize()}")
             item.setData(Qt.ItemDataRole.UserRole, entry["id"])
             item.setForeground(
-                QColor(
-                    {"running": ACCENT, "failed": DANGER, "done": OK_TEXT}.get(entry["state"], TEXT)
-                )
+                QColor({"running": ACCENT, "failed": DANGER}.get(entry["state"], TEXT))
             )
             item.setToolTip(source + ("\n" + entry["error"] if entry["error"] else ""))
             self.queue_list.addItem(item)
             if entry["id"] == selected_id:
                 self.queue_list.setCurrentItem(item)
         remaining = sum(e["state"] in {"waiting", "paused", "running"} for e in self.queue.entries)
+        self.queue_panel.setVisible(bool(self.queue.entries) or bool(self.queue_storage_error))
         self.queue_heading.setText(f"QUEUE · {remaining} left")
         self.queue_toggle.setText("Pause queue" if self.queue_running else "Resume queue")
         self.queue_toggle.setEnabled(
@@ -2283,7 +2308,7 @@ class Window(QMainWindow):
             if self.queue_running
             else "Queue saved. Resume to continue. Originals must stay available."
             if remaining
-            else "Add recordings with + New. Removing a queue item keeps its files."
+            else "Select a failed recording to see why, retry it or remove it. Files are kept."
         )
         if self.queue_storage_error:
             self.queue_note.setText(
@@ -2429,7 +2454,9 @@ class Window(QMainWindow):
             self.root = self.processing_root = Path(event["job"])
             if self.active_entry:
                 self.queue_write(
-                    lambda: self.queue.update(self.active_entry, job=str(self.processing_root))
+                    lambda: self.queue.update(
+                        self.active_entry, job=str(self.processing_root.resolve())
+                    )
                 )
             self.refresh_jobs()
             self.process_page.files_button.setEnabled(True)
@@ -2451,25 +2478,26 @@ class Window(QMainWindow):
         self.process_page.stop()
         root = self.processing_root
         queued = self.active_entry is not None
+        state = None
         if queued:
             state = (
                 "done"
                 if code == 0 and status == QProcess.ExitStatus.NormalExit
                 else ("paused" if self.pause_requested or self.closing else "failed")
             )
-            self.queue_write(
-                lambda: self.queue.update(
-                    self.active_entry,
-                    state=state,
-                    error=(
-                        self.errors
-                        or f"Local worker stopped (exit code {code}). Retry to "
-                        "reuse saved checkpoints."
-                    )
-                    if state == "failed"
-                    else "",
+            entry_id = self.active_entry
+            if state == "done":
+                self.queue_write(lambda: self.queue.complete(entry_id))
+            else:
+                error = (
+                    self.errors
+                    or f"Local worker stopped (exit code {code}). Retry to reuse saved checkpoints."
                 )
-            )
+                self.queue_write(
+                    lambda: self.queue.update(
+                        entry_id, state=state, error=error if state == "failed" else ""
+                    )
+                )
         self.active_entry = self.processing_root = None
         if root and (root / "job.json").is_file():
             self.root = None
@@ -2479,7 +2507,9 @@ class Window(QMainWindow):
         self.refresh_jobs()
         self.set_busy(False)
         self.refresh_queue()
-        if code != 0:
+        if state == "paused":
+            self.flash("Queue paused. Saved checkpoints are kept; resume to continue.")
+        elif code != 0:
             self.flash("Recording stopped. Saved checkpoints are kept; see the queue to retry.")
             # A failed file must not block an unattended batch with a modal dialog.
             if not queued and code != 130:
@@ -2515,6 +2545,14 @@ def launch(initial=None):
     set_app_icon(app)
     app.setFont(font(14))
     app.setStyleSheet(STYLE)
-    window = Window(initial)
+    try:
+        window = Window(initial)
+    except QueueInUse:
+        QMessageBox.information(
+            None,
+            "Meeting Protocol",
+            "Meeting Protocol is already open. Switch to the open window to continue.",
+        )
+        sys.exit(0)
     window.show()
     sys.exit(app.exec())

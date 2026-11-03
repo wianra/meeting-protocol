@@ -60,3 +60,10 @@ The main desktop window now supports multiple-file selection and a durable FIFO 
 - Rendered and inspected the [processing queue](images/processing-queue.png), [multiple-file dialog](images/add-recordings.png) and [file locations](images/recording-files.png) using synthetic recordings and preview text. The Files dialog distinguishes original-file references, decoded working audio, automatic exports and separately exported copies.
 
 This update does not change the model implementations. The queue scheduling tests use a controlled worker boundary; the new smoke check validates real worker launch and failure handling, not a new end-to-end multi-recording inference benchmark. Native Windows UI and a packaged build remain to be checked for this update.
+
+Review follow-up (same day):
+
+- Ran **three real recordings** (clips of `audio.m4a`) through the queue with the installed models under the macOS network sandbox. The third was added while the first ran. All three finished in order and wrote Word, text, JSON and HTML exports. The queue was then empty and hidden. Pausing mid-file and resuming reused the same meeting folder.
+- Force-killed the window (`kill -9`) mid-file. The supervisor and its stage worker exited within 1.5 s; on reopen the entry was **Paused** and did not start by itself.
+- Fixed: a second app launch and an unreadable `queue.json` no longer crash startup; **Resume** on a meeting runs that meeting rather than the earliest paused entry; queue lookups compare resolved paths; finished entries leave the queue; a deliberate pause no longer reports a stop; the Files dialog no longer clips wrapped paths.
+- **56 tests** pass.

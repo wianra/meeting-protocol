@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from meeting_protocol.queue import ProcessingQueue
+from meeting_protocol.queue import ProcessingQueue, QueueInUse
 
 
 def test_fifo_recovery_retry_and_removal_keep_recordings(tmp_path):
@@ -28,28 +28,48 @@ def test_fifo_recovery_retry_and_removal_keep_recordings(tmp_path):
     assert queue.next()["id"] == ids[1]
     with pytest.raises(ValueError, match="Pause"):
         queue.remove(ids[1])
-    queue.update(ids[1], state="done")
+    queue.complete(ids[1])
     queue.retry(ids[0])
     assert queue.next()["id"] == ids[0]
-    queue.update(ids[0], state="done")
-    queue.remove(ids[0])
+    queue.complete(ids[0])
+    assert queue.entries == []
     assert source.read_bytes() == b"original recording"
     queue.close()
 
 
-def test_queue_excludes_another_window_and_preserves_corrupt_file(tmp_path):
+def test_queue_excludes_another_window_and_sets_aside_corrupt_file(tmp_path):
     queue = ProcessingQueue(tmp_path)
-    with pytest.raises(RuntimeError, match="another app window"):
+    with pytest.raises(QueueInUse, match="another app window"):
         ProcessingQueue(tmp_path)
     queue.close()
     path = tmp_path / "queue.json"
-    path.write_text('{"version": 99, "entries": []}')
-    with pytest.raises(ValueError, match="Unsupported"):
-        ProcessingQueue(tmp_path)
-    assert json.loads(path.read_text())["version"] == 99
-    # Failed loading must release the lock too.
-    path.write_text('{"version": 1, "entries": []}')
-    ProcessingQueue(tmp_path).close()
+    for corrupt in ('{"version": 99, "entries": []}', "{not json", '{"version": 1}'):
+        path.write_text(corrupt)
+        # An unreadable queue must not stop the app from opening; the file is kept aside.
+        queue = ProcessingQueue(tmp_path)
+        assert queue.entries == [] and queue.recovered == tmp_path / "queue.json.bad"
+        assert queue.recovered.read_text() == corrupt
+        queue.close()
+
+
+def test_finished_entries_leave_the_queue_and_paths_match_when_resolved(tmp_path):
+    real = tmp_path / "real"
+    (real / "job").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(real)
+    queue = ProcessingQueue(tmp_path / "data")
+    first, second = queue.add([["transcribe", "a.wav"], ["resume", str(real / "job")]])
+    assert queue.find(tmp_path / "link" / "job")["id"] == second
+    assert queue.prioritize(second)["id"] == queue.next()["id"] == second
+    queue.complete(second)
+    assert [e["id"] for e in queue.entries] == [first]
+    queue.close()
+
+    # Queues saved by the earlier version kept "done" entries; they are dropped on load.
+    entry = {**queue.entries[0], "state": "done"}
+    queue.path.write_text(json.dumps({"version": 1, "entries": [entry]}))
+    queue = ProcessingQueue(tmp_path / "data")
+    assert queue.entries == [] and queue.recovered is None
+    queue.close()
 
 
 def test_failed_queue_write_does_not_change_in_memory_or_disk(tmp_path, monkeypatch):

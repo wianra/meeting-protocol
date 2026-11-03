@@ -3,6 +3,8 @@ import os
 import wave
 from pathlib import Path
 
+import pytest
+
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 
@@ -390,7 +392,7 @@ def test_queue_runs_sequentially_continues_after_failure_and_pauses(tmp_path, mo
     finish_worker(window, worker, 1)
     app.processEvents()
     assert worker["starts"][-1][3] == sources[2]
-    failed = window.queue.entries[1]
+    failed = window.queue.entries[0]
     assert failed["state"] == "failed" and failed["job"] is None
     assert failed["error"] == "Original audio is missing"
     assert window.root == a
@@ -399,10 +401,11 @@ def test_queue_runs_sequentially_continues_after_failure_and_pauses(tmp_path, mo
     finish_worker(window, worker, 130)
     app.processEvents()
     assert len(worker["starts"]) == 3
-    assert [e["state"] for e in window.queue.entries] == ["done", "failed", "paused", "waiting"]
+    # The finished recording has left the queue; its meeting stays in the job list.
+    assert [e["state"] for e in window.queue.entries] == ["failed", "paused", "waiting"]
 
     # Retry queues the failed recording and waits for an explicit resume.
-    window.queue_list.setCurrentRow(1)
+    window.queue_list.setCurrentRow(0)
     window.retry_queue_entry()
     assert len(worker["starts"]) == 3
     window.toggle_queue()
@@ -577,3 +580,86 @@ def test_resume_while_worker_is_stopping_does_not_skip_the_paused_file(tmp_path,
     window.pause_queue()
     finish_worker(window, worker, 130)
     window.close()
+
+
+def test_resume_runs_the_open_meeting_before_other_paused_recordings(tmp_path, monkeypatch):
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    first = make_job(tmp_path, "first", with_text=False)
+    other = make_job(tmp_path, "other", with_text=False)
+    window.enqueue([["transcribe", str(tmp_path / "first.wav")]])
+    window.handle_event({"job": str(first), "status": "running"})
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    app.processEvents()
+    window.open_job(other)
+    window.resume_job(False)
+    assert worker["starts"][-1] == ["-m", "meeting_protocol.cli", "resume", str(other)]
+    assert [e["state"] for e in window.queue.entries] == ["running", "paused"]
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    window.close()
+
+
+def test_queue_is_empty_and_hidden_once_every_recording_is_done(tmp_path, monkeypatch):
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+    flashes = []
+    monkeypatch.setattr(window, "flash", flashes.append)
+    window.show()
+    assert window.queue_panel.isHidden()
+    window.enqueue([["transcribe", str(tmp_path / f"{name}.wav")] for name in "ab"])
+    assert not window.queue_panel.isHidden()
+    window.pause_queue()
+    finish_worker(window, worker, 130)
+    assert flashes[-1].startswith("Queue paused")
+    window.toggle_queue()
+    for _ in range(2):
+        finish_worker(window, worker)
+        app.processEvents()
+    assert window.queue.entries == [] and window.queue_list.count() == 0
+    assert window.queue_panel.isHidden()
+    assert json.loads(window.queue.path.read_text())["entries"] == []
+    window.close()
+
+
+def test_second_window_and_corrupt_queue_do_not_crash_startup(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from meeting_protocol.gui import main
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "queue.json").write_text("{not json")
+    QApplication.instance() or QApplication([])
+    notices = []
+    monkeypatch.setattr(main.Window, "notice", lambda self, text: notices.append(text))
+    window = main.Window()
+    QApplication.processEvents()
+    assert "set aside" in notices[0] and window.queue.entries == []
+
+    messages = []
+    monkeypatch.setattr(main, "require_offline", lambda: None)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args[2]))
+    with pytest.raises(SystemExit) as exit_:
+        main.launch()
+    assert exit_.value.code == 0 and "already open" in messages[0]
+    window.close()
+
+
+def test_add_dialog_shows_placeholder_until_files_are_chosen(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    from meeting_protocol.gui.main import NewRecording
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    QApplication.instance() or QApplication([])
+    dialog = NewRecording(None)
+    assert dialog.source_stack.currentWidget() is dialog.empty
+    assert not dialog.remove.isEnabled()
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *a, **k: (["/x/a.wav"], ""))
+    dialog.browse()
+    assert dialog.source_stack.currentWidget() is dialog.sources
+    dialog.sources.setCurrentRow(0)
+    assert dialog.remove.isEnabled()
+    dialog.remove_selected()
+    assert dialog.source_stack.currentWidget() is dialog.empty
+    dialog.close()

@@ -69,11 +69,17 @@ class FilesDialog(QDialog):
         done.clicked.connect(self.accept)
         actions.addWidget(done)
         layout.addLayout(actions)
+        # Wrapped paths and notes need more height than the dialog's default size hint.
+        layout.activate()
+        self.setMinimumHeight(layout.totalHeightForWidth(self.minimumWidth()))
 
     @staticmethod
     def section(layout, title, path):
         heading = QLabel(title)
-        heading.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        bold = heading.font()
+        bold.setBold(True)
+        heading.setFont(bold)
+        layout.addSpacing(6)
         layout.addWidget(heading)
         layout.addWidget(path)
 
