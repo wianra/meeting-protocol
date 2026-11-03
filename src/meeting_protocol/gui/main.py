@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import updates
 from ..compat import stop_supervisor
 from ..export import (
     corrected,
@@ -135,6 +136,8 @@ QListWidget#jobs {{ background: transparent; border: 0; outline: none; }}
 QListWidget#jobs::item {{ padding: 0; margin: 1px 0; border-radius: 6px; color: {TEXT}; }}
 QListWidget#jobs::item:hover {{ background: {HOVER}; }}
 QListWidget#jobs::item:selected {{ background: {CARD}; border: 1px solid {CONTROL}; color: {TEXT}; }}
+QFrame#updateCard {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 6px; }}
+QFrame#updateCard[notice="true"] {{ background: {ACCENT_TINT}; border-color: {ACCENT}; }}
 QListWidget#queue {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 6px; outline: none; }}
 QListWidget#queue::item {{ padding: 8px 10px; border-bottom: 1px solid {LINE}; }}
 QListWidget#queue::item:selected {{ background: {ACCENT_TINT}; color: {TEXT}; }}
@@ -1568,10 +1571,99 @@ class Window(QMainWindow):
         panel.addLayout(queue_actions)
         self.queue_note = label("", 12, "muted", wrap=True)
         panel.addWidget(self.queue_note)
+        if os.environ.get(updates.ENABLED):
+            self.build_updates(layout)
         layout.addWidget(
             label(f"Offline. Audio and text stay on this {DEVICE}.", 12, "muted", wrap=True)
         )
         return side
+
+    def build_updates(self, layout):
+        """Ask once whether to check for updates, then show a notice when one exists."""
+        self.update_ask = QFrame()
+        self.update_ask.setObjectName("updateCard")
+        ask = QVBoxLayout(self.update_ask)
+        ask.setContentsMargins(12, 10, 12, 10)
+        ask.setSpacing(8)
+        ask.addWidget(label("Check for updates?", 13, weight=QFont.Weight.DemiBold))
+        ask.addWidget(
+            label(
+                "When the app starts, it can ask GitHub whether a newer version exists. "
+                "GitHub sees your IP address and app version, never recordings or transcripts. "
+                "Checks begin the next time you open the app.",
+                12,
+                "muted",
+                wrap=True,
+            )
+        )
+        answers = QHBoxLayout()
+        yes = button("Check at start", "small", 12)
+        yes.clicked.connect(lambda: self.allow_updates(True))
+        no = button("No thanks", "small", 12)
+        no.clicked.connect(lambda: self.allow_updates(False))
+        answers.addWidget(yes)
+        answers.addWidget(no)
+        answers.addStretch()
+        ask.addLayout(answers)
+        layout.addWidget(self.update_ask)
+
+        self.update_card = QFrame()
+        self.update_card.setObjectName("updateCard")
+        self.update_card.setProperty("notice", True)
+        card = QVBoxLayout(self.update_card)
+        card.setContentsMargins(12, 10, 12, 10)
+        card.setSpacing(8)
+        self.update_text = label("", 13, weight=QFont.Weight.DemiBold, wrap=True)
+        card.addWidget(self.update_text)
+        card.addWidget(
+            label("Install it over this one. Meetings and models are kept.", 12, "muted", wrap=True)
+        )
+        get = button("Download…", "primary", 12)
+        get.clicked.connect(self.open_update)
+        card.addWidget(get, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.update_card)
+
+        self.update_toggle = QCheckBox("Check for updates at start")
+        self.update_toggle.setFont(font(12))
+        self.update_toggle.toggled.connect(self.allow_updates)
+        layout.addWidget(self.update_toggle)
+
+        self.update = None
+        # The check runs in a separate process started with the app; pick up its answer.
+        self.update_polls = 0
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.poll_update)
+        self.update_timer.start(2000)
+        self.refresh_updates()
+
+    def allow_updates(self, value):
+        try:
+            updates.set_allowed(value)
+        except OSError as exc:
+            self.notice(f"Could not save the update setting: {exc}")
+        self.refresh_updates()
+
+    def poll_update(self):
+        self.update_polls += 1
+        if self.update_polls >= 15:
+            self.update_timer.stop()
+        self.refresh_updates()
+
+    def refresh_updates(self):
+        allowed = updates.allowed()
+        self.update = updates.available() if allowed else None
+        self.update_ask.setVisible(allowed is None)
+        self.update_card.setVisible(self.update is not None)
+        if self.update:
+            self.update_text.setText(f"Meeting Protocol {self.update['version']} is available")
+        self.update_toggle.setVisible(allowed is not None)
+        self.update_toggle.blockSignals(True)
+        self.update_toggle.setChecked(bool(allowed))
+        self.update_toggle.blockSignals(False)
+
+    def open_update(self):
+        if self.update:
+            QDesktopServices.openUrl(QUrl(self.update["url"]))
 
     def build_main(self):
         review = QWidget()

@@ -53,6 +53,7 @@ def parser():
     rename.add_argument("job")
     rename.add_argument("old", nargs="?", help="Current label; omit to list the speakers")
     rename.add_argument("new", nargs="?", help="New name")
+    sub.add_parser("_updates", help=argparse.SUPPRESS)
     worker = sub.add_parser("_worker", help=argparse.SUPPRESS)
     worker.add_argument("job")
     worker.add_argument("stage")
@@ -92,8 +93,9 @@ def main():
 
     fix_missing_streams()
     args = parser().parse_args()
-    # `app` only installs models before re-entering as the sandboxed `gui`.
-    online = args.command in ("login", "provision", "app")
+    # `app` only installs models before re-entering as the sandboxed `gui`; `_updates` only
+    # asks GitHub for the latest release number, and only after the user agreed.
+    online = args.command in ("login", "provision", "app", "_updates")
     configure(offline=not online)
     try:
         if not online:
@@ -117,6 +119,9 @@ def main():
 
                 if not run_setup():
                     return 0
+            from .updates import start_check
+
+            start_check()
             if sys.platform == "win32":
                 # No exec on Windows: continue in this process, now with networking off.
                 configure(offline=True)
@@ -126,6 +131,10 @@ def main():
                 launch(None)
             else:
                 os.execv(sys.executable, [sys.executable, "-m", "meeting_protocol.cli", "gui"])
+        elif args.command == "_updates":
+            from .updates import check
+
+            check()
         elif args.command == "doctor":
             from .jobs import runtime_versions
 
