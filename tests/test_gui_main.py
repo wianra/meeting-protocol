@@ -686,3 +686,96 @@ def test_resume_retries_a_failed_meeting_instead_of_duplicating_it(tmp_path, mon
     window.pause_queue()
     finish_worker(window, worker, 130)
     window.close()
+
+
+def test_suspension_is_measured_from_a_late_tick():
+    from meeting_protocol.logs import suspended_for
+
+    assert suspended_for(1000.0, 1031.0, 30) == 0.0  # Timer jitter.
+    assert suspended_for(1000.0, 1000.0 + 30 + 3600, 30) == 3600
+
+
+def test_stall_is_logged_and_reported_without_transcript_text(tmp_path, monkeypatch):
+    from meeting_protocol.gui import main
+    from meeting_protocol.logs import path as log_path
+
+    _app, window, worker = queue_window(tmp_path, monkeypatch)
+    signals = []
+    monkeypatch.setattr(main.os, "kill", lambda pid, sig: signals.append(sig))
+    window.enqueue([["transcribe", str(tmp_path / "a.wav")]])
+    window.pending = ""
+    event = {"stage": "transcription", "done": 1, "total": 9, "latest": "Secret words"}
+    monkeypatch.setattr(
+        window.process, "readAllStandardOutput", lambda: (json.dumps(event) + "\n").encode()
+    )
+    main.Window.receive(window)
+
+    # Sleeping for an hour is not a stall.
+    window.last_tick -= 3600
+    window.last_event -= 3600
+    window.check_health()
+    assert not window.stalled and not signals
+
+    window.last_event -= main.STALL_SECONDS
+    window.check_health()
+    assert window.stalled and "No progress" in window.process_page.status
+    if not main.WINDOWS:
+        assert signals == [main.signal.SIGUSR1]
+    text = log_path().read_text()
+    assert "suspended for about 60 min" in text
+    assert "progress: transcription 1/9" in text and "no progress for" in text
+    assert "Secret words" not in text
+    finish_worker(window, worker, 130)
+    window.close()
+
+
+def test_pause_that_does_not_stop_the_worker_is_forced(tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer
+
+    _app, window, worker = queue_window(tmp_path, monkeypatch)
+    timers, kills = [], []
+    monkeypatch.setattr(QTimer, "singleShot", lambda ms, fn: timers.append(fn))
+    monkeypatch.setattr(window.process, "kill", lambda: kills.append(True))
+    window.enqueue([["transcribe", str(tmp_path / "a.wav")]])
+    window.pause_queue()
+    assert worker["stops"] == 1 and not kills
+    timers[-1]()
+    assert kills == [True]
+
+    # A pause that ended in time leaves a later run alone.
+    finish_worker(window, worker, 130)
+    timers[-1]()
+    assert kills == [True]
+    window.close()
+
+
+def test_any_start_failure_fails_the_entry_instead_of_wedging_the_queue(tmp_path, monkeypatch):
+    import sqlite3
+
+    from meeting_protocol.logs import path as log_path
+
+    app, window, worker = queue_window(tmp_path, monkeypatch)
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(window.process_page, "start", locked)
+    window.enqueue([["transcribe", str(tmp_path / "a.wav")]])
+    app.processEvents()
+    assert window.active_entry is None and not worker["starts"]
+    assert window.queue.entries[0]["state"] == "failed"
+    assert "database is locked" in window.queue.entries[0]["error"]
+    assert "OperationalError: database is locked" in log_path().read_text()
+    window.close()
+
+
+def test_entry_running_without_a_worker_is_recovered(tmp_path, monkeypatch):
+    _app, window, worker = queue_window(tmp_path, monkeypatch)
+    window.enqueue([["transcribe", str(tmp_path / "a.wav")]])
+    worker["running"] = False  # The worker vanished without a finished signal.
+    window.check_health()
+    assert window.active_entry is not None  # One tick may be a race; two are not.
+    window.check_health()
+    assert window.active_entry is None
+    assert window.queue.entries[0]["state"] == "failed"
+    window.close()

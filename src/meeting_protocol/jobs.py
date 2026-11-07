@@ -11,7 +11,8 @@ from importlib.metadata import version
 from pathlib import Path
 
 from .audio import inspect_audio
-from .compat import WorkerGroup, watch_gui_parent
+from .compat import WINDOWS, WorkerGroup, keep_awake, watch_gui_parent
+from .logs import enable_crash_traces, log
 from .models import asr_backend, model_info
 from .privacy import home, require_offline
 from .storage import Store, atomic_write, canonical, digest_file, fingerprint, lock
@@ -109,19 +110,47 @@ def validate_job(config):
 
 def run_job(root: Path, *, add_speakers=False):
     require_offline()
+    try:
+        _run_job(root, add_speakers)
+    except KeyboardInterrupt:
+        log(f"job {root.name}: paused")
+        raise
+    except BaseException as exc:
+        log(f"job {root.name}: stopped, {type(exc).__name__}: {exc}")
+        raise
+    log(f"job {root.name}: complete")
+
+
+def _run_job(root, add_speakers):
     with lock(root / ".lock"):
         config = read_config(root)
+        log(f"job {root.name}: supervisor started, {keep_awake()}")
         if add_speakers and config["asr_only"]:
             config["models"]["diarization"] = model_info("diarization")
             config["asr_only"] = False
             atomic_write(root / "job.json", canonical(config))
+        started = time.monotonic()
         validate_job(config)
+        # Hashing the recording and models is slow on network or cloud-synced folders.
+        log(f"job {root.name}: recording and models verified in {time.monotonic() - started:.0f} s")
         stages = ["decode", "asr"]
         if not config["asr_only"]:
             stages.append("diarization")
         stages.append("export")
         print(json.dumps({"job": str(root), "status": "running"}), flush=True)
         group = WorkerGroup()
+        current = {}
+        if not WINDOWS:
+
+            def dump(signum, frame):
+                # The window asks for this when progress stops. Before any worker starts,
+                # install_cancel_handler's faulthandler dumps this process instead.
+                proc = current.get("proc")
+                if proc and proc.poll() is None and time.monotonic() - current["at"] > 5:
+                    log(f"job {root.name}: no progress, asking {current['stage']} for stacks")
+                    os.kill(proc.pid, signal.SIGUSR1)
+
+            signal.signal(signal.SIGUSR1, dump)
         for stage in stages:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "meeting_protocol.cli", "_worker", str(root), stage],
@@ -129,8 +158,15 @@ def run_job(root: Path, *, add_speakers=False):
                 **group.popen_args(),
             )
             group.add(proc)
+            current.update(proc=proc, stage=stage, at=time.monotonic())
+            log(f"job {root.name}: {stage} started (pid {proc.pid})")
             try:
-                if proc.wait() != 0:
+                code = proc.wait()
+                log(
+                    f"job {root.name}: {stage} exited with {code} "
+                    f"after {time.monotonic() - current['at']:.0f} s"
+                )
+                if code != 0:
                     raise RuntimeError(
                         f"{stage} failed; completed checkpoints are saved. "
                         "Resume this job after resolving the error."
@@ -141,9 +177,12 @@ def run_job(root: Path, *, add_speakers=False):
                     try:
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
+                        log(f"job {root.name}: {stage} did not stop, killing it")
                         proc.kill()
                         proc.wait()
                 raise
+            finally:
+                current.clear()
         print(
             json.dumps({"job": str(root), "status": "complete", "exports": str(root / "exports")}),
             flush=True,
@@ -163,8 +202,13 @@ def worker(root: Path, stage: str):
                 time.sleep(0.25)
 
         threading.Thread(target=watch_parent, daemon=True).start()
-    with lock(root / ".worker.lock"):
-        _worker_locked(root, stage)
+    enable_crash_traces()
+    try:
+        with lock(root / ".worker.lock"):
+            _worker_locked(root, stage)
+    except BaseException as exc:
+        log(f"job {root.name}: {stage} worker stopped, {type(exc).__name__}: {exc}")
+        raise
 
 
 def _worker_locked(root: Path, stage: str):
@@ -222,5 +266,6 @@ def install_cancel_handler():
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, cancel)
+    enable_crash_traces()
     if parent := os.environ.get("DIARIZE_GUI_PARENT_PID"):
         watch_gui_parent(int(parent))
