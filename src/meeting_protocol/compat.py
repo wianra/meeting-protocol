@@ -139,6 +139,37 @@ def stop_supervisor(process) -> None:
         process.kill()
 
 
+_awake = None
+
+
+def keep_awake():
+    """Hold off idle system sleep while this process runs; returns what was done.
+
+    Sleep freezes processing, and work in flight across it (GPU, network or cloud-synced
+    recordings) is where a job can stall. This does not prevent closing the lid or
+    choosing Sleep. macOS: caffeinate ends by itself when this process exits. Windows:
+    the request belongs to the calling thread, which must stay alive meanwhile.
+    """
+    global _awake
+    if not WINDOWS:
+        try:
+            _awake = subprocess.Popen(
+                ["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            return f"could not prevent idle sleep: {exc}"
+        return "idle sleep prevented (caffeinate)"
+    import ctypes
+
+    # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+    if not ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001):
+        return "could not prevent idle sleep"
+    return "idle sleep prevented"
+
+
 def watch_gui_parent(expected_pid):
     """Stop a desktop supervisor if its window dies without a normal close.
 

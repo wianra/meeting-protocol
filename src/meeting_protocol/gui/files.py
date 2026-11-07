@@ -7,6 +7,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from ..jobs import read_config
+from ..logs import path as log_path
 from ..privacy import home
 
 
@@ -63,6 +64,15 @@ class FilesDialog(QDialog):
         layout.addWidget(note)
         self.section(layout, "App data folder", self.data_path)
         self.open_button(layout, "Open app data folder", home())
+        self.log_path = path_label(log_path())
+        self.section(layout, "Diagnostic log", self.log_path)
+        note = QLabel(
+            "Records when processing starts, stops or stalls, and why. It contains file "
+            "paths but no transcript text. Include it when reporting a problem."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.open_button(layout, "Open log folder", log_path().parent)
         actions = QHBoxLayout()
         actions.addStretch()
         done = QPushButton("Done")

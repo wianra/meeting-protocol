@@ -8,6 +8,7 @@ processing are shared with the classic window (`gui/classic.py`); only the inter
 import html
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -50,8 +51,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import updates
-from ..compat import stop_supervisor
+from .. import __version__, updates
+from ..compat import WINDOWS, stop_supervisor
 from ..export import (
     corrected,
     describe_flags,
@@ -60,6 +61,8 @@ from ..export import (
     rename_speakers,
 )
 from ..jobs import read_config, resolve_job
+from ..logs import enable_crash_traces, log, rotate, suspended_for
+from ..logs import path as log_path
 from ..privacy import home, require_offline
 from ..queue import ProcessingQueue, QueueInUse
 from ..storage import Store, lock
@@ -978,6 +981,11 @@ class NewRecording(QDialog):
 LANES = (("audio", "Audio"), ("text", "Text"), ("speakers", "Speakers"), ("draft", "Draft"))
 LANE_OF = {"decode": "audio", "transcription": "text", "export": "draft"}  # Others: speakers.
 LANGUAGES = {"auto": "Any language", "de": "German", "fr": "French", "it": "Italian"}
+TICK_SECONDS = 30
+# Long enough for model loading and slow diarisation steps; only reported, never acted on.
+STALL_SECONDS = 15 * 60
+# A pause that has not ended the worker by then is forced; checkpoints stay valid.
+FORCE_STOP_MS = 15000
 
 
 def mono(size, weight=QFont.Weight.Normal):
@@ -1461,6 +1469,8 @@ class Window(QMainWindow):
         self.queue_running = self.closing = False
         self.pause_requested = False
         self.queue_storage_error = None
+        rotate()
+        log(f"window opened, version {__version__}, data in {home()}")
 
         self.process = QProcess(self)
         self.process.readyReadStandardOutput.connect(self.receive)
@@ -1501,7 +1511,14 @@ class Window(QMainWindow):
             self.show_empty()
         self.set_busy(False)
         self.refresh_queue()
+        # Notices sleep (a late tick) and a worker that stops reporting progress.
+        self.last_tick, self.last_event, self.stage, self.stalled = time.time(), None, None, False
+        self.wedged = False
+        self.heartbeat = QTimer(self)
+        self.heartbeat.timeout.connect(self.check_health)
+        self.heartbeat.start(TICK_SECONDS * 1000)
         if self.queue.recovered:
+            log(f"queue file unreadable, kept as {self.queue.recovered}")
             QTimer.singleShot(
                 0,
                 lambda: self.notice(
@@ -2354,6 +2371,7 @@ class Window(QMainWindow):
             return operation()
         except OSError as exc:
             # Fail closed: a worker must never start unless its queue state is durable.
+            log(f"queue could not be saved: {exc}")
             self.queue_storage_error = str(exc)
             self.queue_running = False
             self.pause_requested = True
@@ -2421,7 +2439,7 @@ class Window(QMainWindow):
     def show_queue_error(self):
         entry = self.selected_queue_entry()
         if entry and entry["error"]:
-            self.notice(entry["error"])
+            self.notice(f"{entry['error']}\n\nMore detail is in the diagnostic log:\n{log_path()}")
 
     def enqueue(self, commands):
         if self.closing or self.queue_storage_error or not self.save_selected():
@@ -2456,8 +2474,17 @@ class Window(QMainWindow):
         self.pause_requested = True
         self.refresh_queue()
         if self.is_busy():
+            log(f"queue entry {self.active_entry}: pause requested")
             self.pause_button.setEnabled(False)
             stop_supervisor(self.process)
+            entry = self.active_entry
+            QTimer.singleShot(FORCE_STOP_MS, lambda: self.force_stop(entry))
+
+    def force_stop(self, entry):
+        """A worker stuck in a system call (e.g. a disconnected drive) ignores SIGTERM."""
+        if self.is_busy() and self.pause_requested and self.active_entry == entry:
+            log(f"queue entry {entry}: worker did not pause, ending it")
+            self.process.kill()
 
     def retry_queue_entry(self):
         entry = self.selected_queue_entry()
@@ -2493,6 +2520,7 @@ class Window(QMainWindow):
             return
         self.active_entry = entry["id"]
         self.pause_requested = False
+        log(f"queue entry {entry['id']}: starting {entry['args'][0]} {entry['args'][1]}")
         args = entry["args"]
         self.processing_root = Path(entry["job"]) if entry["job"] else None
         if self.processing_root:
@@ -2503,7 +2531,8 @@ class Window(QMainWindow):
             ]
         try:
             self.begin(args)
-        except (OSError, ValueError, KeyError) as exc:
+        except Exception as exc:  # noqa: BLE001 -- any start failure must not wedge the queue.
+            log(f"queue entry {entry['id']}: could not start, {type(exc).__name__}: {exc}")
             self.errors = str(exc)
             self.processing_root = None
             self.finished(1, QProcess.ExitStatus.NormalExit)
@@ -2520,9 +2549,12 @@ class Window(QMainWindow):
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("DIARIZE_GUI_PARENT_PID", str(os.getpid()))
         self.process.setProcessEnvironment(environment)
+        self.last_event, self.stage, self.stalled = time.time(), None, False
         self.process.start(sys.executable, ["-m", "meeting_protocol.cli", *args])
+        log(f"supervisor started (pid {self.process.processId()})")
 
     def process_error(self, error):
+        log(f"supervisor process error {error.name}: {self.process.errorString()}")
         if error == QProcess.ProcessError.FailedToStart and self.active_entry:
             self.errors = "Could not start the local worker: " + self.process.errorString()
             self.finished(1, QProcess.ExitStatus.CrashExit)
@@ -2537,7 +2569,50 @@ class Window(QMainWindow):
                 event = json.loads(line)
             except ValueError:
                 continue
+            self.last_event, self.stalled = time.time(), False
+            # Stage changes only: events can carry transcript text, which is never logged.
+            if event.get("stage", self.stage) != self.stage:
+                self.stage = event["stage"]
+                log(f"progress: {self.stage} {event.get('done')}/{event.get('total')}")
             self.handle_event(event)
+
+    def check_health(self):
+        # An entry marked running with no process would block the queue for good.
+        wedged = bool(self.active_entry) and not self.is_busy()
+        if wedged and self.wedged:
+            log(f"queue entry {self.active_entry}: running without a worker, marking it failed")
+            self.errors = self.errors or "The local worker was lost. Retry to reuse saved work."
+            self.finished(1, QProcess.ExitStatus.CrashExit)
+        self.wedged = wedged
+        now = time.time()
+        asleep = suspended_for(self.last_tick, now, TICK_SECONDS)
+        self.last_tick = now
+        if asleep:
+            log(f"window was suspended for about {asleep / 60:.0f} min (sleep or App Nap)")
+            if self.last_event:
+                self.last_event += asleep  # Time asleep is not a stall.
+        if not self.is_busy() or not self.last_event or self.stalled:
+            return
+        quiet = now - self.last_event
+        if quiet < STALL_SECONDS:
+            return
+        self.stalled = True
+        lane = self.process_page.lanes.get(self.process_page.current) or {}
+        log(
+            f"no progress for {quiet / 60:.0f} min in {self.stage or 'startup'} "
+            f"at {lane.get('done', 0)}/{lane.get('total', 0)}"
+        )
+        if not WINDOWS:
+            try:
+                # The supervisor forwards this to its worker, which logs where it is stuck.
+                os.kill(self.process.processId(), signal.SIGUSR1)
+            except OSError:
+                pass
+        self.process_page.status = (
+            f"No progress reported for {quiet / 60:.0f} minutes. Some speaker steps take "
+            f"long on long meetings. Details are logged in {log_path()}"
+        )
+        self.process_page.refresh()
 
     def handle_event(self, event):
         if "job" in event:
@@ -2577,6 +2652,11 @@ class Window(QMainWindow):
                 if code == 0 and status == QProcess.ExitStatus.NormalExit
                 else ("paused" if self.pause_requested or self.closing else "failed")
             )
+        log(
+            f"queue entry {self.active_entry}: supervisor exited with {code} ({status.name}), "
+            f"now {state}" + (f"\n{self.errors[-1500:].rstrip()}" if self.errors else "")
+        )
+        if queued:
             entry_id = self.active_entry
             if state == "done":
                 self.queue_write(lambda: self.queue.complete(entry_id))
@@ -2591,14 +2671,19 @@ class Window(QMainWindow):
                     )
                 )
         self.active_entry = self.processing_root = None
-        if root and (root / "job.json").is_file():
-            self.root = None
-            self.open_job(root)
-        elif self.root is None:
-            self.show_empty()
-        self.refresh_jobs()
-        self.set_busy(False)
-        self.refresh_queue()
+        try:
+            if root and (root / "job.json").is_file():
+                self.root = None
+                self.open_job(root)
+            elif self.root is None:
+                self.show_empty()
+            self.refresh_jobs()
+        finally:
+            # Even if the finished meeting cannot be shown, the window and queue go on.
+            self.set_busy(False)
+            self.refresh_queue()
+            if queued and not self.closing:
+                QTimer.singleShot(0, self.start_next)
         if state == "paused":
             self.flash("Queue paused. Saved checkpoints are kept; resume to continue.")
         elif code != 0:
@@ -2606,8 +2691,6 @@ class Window(QMainWindow):
             # A failed file must not block an unattended batch with a modal dialog.
             if not queued and code != 130:
                 self.notice(self.errors or "The worker stopped. Resume to retry saved work.")
-        if queued and not self.closing:
-            QTimer.singleShot(0, self.start_next)
 
     def closeEvent(self, event):
         if not self.save_selected():
@@ -2618,8 +2701,12 @@ class Window(QMainWindow):
         self.queue_running = False
         self.pause_requested = True
         if self.is_busy():
+            log(f"queue entry {self.active_entry}: window closing, pausing worker")
             stop_supervisor(self.process)
             if not self.process.waitForFinished(7000):
+                log(f"queue entry {self.active_entry}: worker did not pause, ending it")
+                self.process.kill()
+            if self.is_busy() and not self.process.waitForFinished(3000):
                 self.closing = False
                 self.refresh_queue()
                 event.ignore()
@@ -2627,11 +2714,22 @@ class Window(QMainWindow):
                 return
         self.player.stop()
         self.queue.close()
+        log("window closed")
         event.accept()
+
+
+def log_exception(kind, value, trace):
+    """Finder discards stderr, so errors in the window would otherwise leave no trace."""
+    import traceback
+
+    log("uncaught error in the window\n" + "".join(traceback.format_exception(kind, value, trace)))
+    sys.__excepthook__(kind, value, trace)
 
 
 def launch(initial=None):
     require_offline()
+    enable_crash_traces()
+    sys.excepthook = log_exception
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Meeting Protocol")
     set_app_icon(app)

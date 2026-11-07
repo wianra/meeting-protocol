@@ -62,6 +62,12 @@ The sidebar queue shows **Waiting**, **Running**, **Paused** or **Failed** for e
 
 The queue and its settings are saved in `queue.json` in the app data folder. Reopening the app always waits for **Resume queue**, including after an interruption. If `queue.json` cannot be read, the app says so, keeps the file as `queue.json.bad` and starts with an empty queue; meetings are not affected. Adding files to a paused or restored queue does not resume it. Keep the app open while the queue runs. Transcript review and switching meetings become available when processing is paused or the batch finishes. Only one main app window can own the queue for a given data folder; opening the app a second time shows a message instead of a second window; the CLI and earlier windows keep their existing single-file interfaces.
 
+While a recording is processed, the app keeps the computer from going to sleep when idle. Closing the lid or choosing **Sleep** still pauses processing until the computer wakes. If a recording reports no progress for 15 minutes, the processing screen says so; pause and resume the queue to restart it from its saved checkpoints. A pause that does not stop the worker within 15 seconds ends it, and saved checkpoints stay valid.
+
+### Diagnostic log
+
+The app writes a diagnostic log to `logs/app.log` in the app data folder (`~/Library/Application Support/Meeting Protocol/logs/app.log` in the installed Mac app, `%LOCALAPPDATA%\Meeting Protocol\logs\app.log` on Windows). **Files…** and **Details…** show its path. It records when each recording and step starts and ends, exit codes and errors, when the computer slept, and stalls. When a step stalls, it also records where the worker is waiting. Native crashes leave a Python stack trace there. The log contains file paths but no transcript text. When it grows past 5 MB, the previous log is kept as `app.log.1`. Include it when you report a problem.
+
 ### Where recordings and outputs live
 
 **Original recordings stay exactly where you selected them.** The app references their paths; it does not import a copy of the original, move it, modify it or delete it. Keep originals at those paths for playback and resuming processing. If a recording moves or changes, resume fails rather than processing a different file. Decoded working audio is stored separately with the meeting's checkpoints.
