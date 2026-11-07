@@ -779,3 +779,31 @@ def test_entry_running_without_a_worker_is_recovered(tmp_path, monkeypatch):
     assert window.active_entry is None
     assert window.queue.entries[0]["state"] == "failed"
     window.close()
+
+
+def test_long_recording_names_do_not_widen_the_window(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    from meeting_protocol.gui.main import STYLE, Window
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path / "data"))
+    app = QApplication.instance() or QApplication([])
+    app.setStyleSheet(STYLE)
+    widths = {}
+    for name in ("short", "Besprechung mit Konferenz " * 8 + "aufzeichnung"):
+        for with_text in (True, False):
+            root = make_job(tmp_path, f"{name[:5]}-{with_text}", with_text)
+            config = json.loads((root / "job.json").read_text())
+            audio = Path(config["input"]).rename(Path(config["input"]).with_name(f"{name}.wav"))
+            (root / "job.json").write_text(json.dumps({**config, "input": str(audio)}))
+            window = Window(str(root))
+            window.show()
+            app.processEvents()
+            widths[name[:5], with_text] = window.minimumSizeHint().width()
+            if name != "short":
+                shown = window.title if with_text else window.process_page.heading
+                assert shown.text().lower().startswith("besprechung")
+                assert shown.toolTip().lower() == shown.text().lower()  # Full name on hover.
+            window.close()
+    assert widths["Bespr", True] == widths["short", True]
+    assert widths["Bespr", False] == widths["short", False]

@@ -13,7 +13,17 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QProcess,
+    QProcessEnvironment,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -177,6 +187,45 @@ def label(text="", size=14, name=None, weight=QFont.Weight.Normal, wrap=False):
         widget.setObjectName(name)
     widget.setWordWrap(wrap)
     return widget
+
+
+class Elided(QLabel):
+    """One line that shortens in the middle rather than widening the window. Recording
+    names can be longer than the screen is wide; the full text is the tooltip."""
+
+    def __init__(self, size=14, weight=QFont.Weight.Normal, name=None):
+        super().__init__()
+        self.full = ""
+        self.setFont(font(size, weight))
+        if name:
+            self.setObjectName(name)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def setText(self, text):
+        self.full = text
+        self.elide()
+
+    def text(self):
+        return self.full
+
+    def elide(self):
+        shown = self.fontMetrics().elidedText(
+            self.full, Qt.TextElideMode.ElideMiddle, max(0, self.contentsRect().width())
+        )
+        super().setText(shown)
+        self.setToolTip(self.full if shown != self.full else "")
+
+    def minimumSizeHint(self):
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.elide()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self.elide()
 
 
 def button(text, name=None, size=13, tip=None):
@@ -658,7 +707,8 @@ class JobRow(QWidget):
         layout.setSpacing(4)
         text = QVBoxLayout()
         text.setSpacing(2)
-        self.name = label(name, 13)
+        self.name = Elided(13)
+        self.name.setText(name)
         self.meta = label(meta, 12, "muted")
         for widget in (self.name, self.meta):
             widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -1188,7 +1238,7 @@ class ProcessPage(QWidget):
         layout.setSpacing(0)
         self.crumb = caps("", 12, MUTED, spacing=5)
         layout.addWidget(self.crumb)
-        self.heading = label("", 30, weight=QFont.Weight.ExtraBold)
+        self.heading = Elided(30, QFont.Weight.ExtraBold)
         self.heading.setContentsMargins(0, 4, 0, 0)
         layout.addWidget(self.heading)
         intro = label(
@@ -1208,7 +1258,7 @@ class ProcessPage(QWidget):
         body.setSpacing(0)
         head = QHBoxLayout()
         head.setContentsMargins(16, 12, 16, 12)
-        self.file = label("", 14, weight=QFont.Weight.ExtraBold)
+        self.file = Elided(14, QFont.Weight.ExtraBold)
         head.addWidget(self.file, 1)
         self.facts = caps("", 11, MUTED, QFont.Weight.Bold, 5)
         head.addWidget(self.facts)
@@ -1692,7 +1742,7 @@ class Window(QMainWindow):
         header.setSpacing(10)
         ident = QVBoxLayout()
         ident.setSpacing(2)
-        self.title = label("", 22, weight=QFont.Weight.Bold)
+        self.title = Elided(22, QFont.Weight.Bold)
         self.meta = label("", 13, "muted")
         ident.addWidget(self.title)
         ident.addWidget(self.meta)
