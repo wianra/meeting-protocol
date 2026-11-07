@@ -8,6 +8,7 @@ from importlib.metadata import version
 
 from .audio import RATE, waveform
 from .storage import fingerprint
+from .transcription import finite_checkpoint
 
 
 def segment_dict(segment):
@@ -87,7 +88,7 @@ def run(store, config, progress):
                 "segments": segments,
                 "seconds": elapsed,
             }
-            cached = json.loads(json.dumps(cached))
+            cached = finite_checkpoint(json.loads(json.dumps(cached)), index)
             store.put_json(key, cached, "transcription", elapsed)
         latest = next((s for s in reversed(cached["segments"]) if s["text"].strip()), None)
         progress(
@@ -99,7 +100,7 @@ def run(store, config, progress):
             **(
                 {
                     "latest": latest["text"].strip(),
-                    "latest_at": window["read_start"] / RATE + latest["start"],
+                    "latest_at": window["read_start"] / RATE + (latest["start"] or 0),
                 }
                 if latest
                 else {}
