@@ -257,3 +257,48 @@ def test_invalid_renames_are_rejected(tmp_path, old, new):
         rename_speakers(store, named_fixture(), {old: new})
     assert store.speaker_names() == []
     store.close()
+
+
+def test_nan_from_whisper_is_saved_as_unknown_and_flagged(tmp_path, monkeypatch):
+    import json
+
+    from meeting_protocol.logs import path as log_path
+    from meeting_protocol.storage import canonical
+    from meeting_protocol.transcription import finite_checkpoint
+
+    monkeypatch.setenv("DIARIZE_HOME", str(tmp_path))
+    nan = float("nan")
+    raw = {
+        "window": {"start": 0, "end": 32000, "read_start": 0, "read_end": 32000},
+        "language": "de",
+        "segments": [
+            {
+                "start": 0.0,
+                "end": nan,
+                "text": " Hallo zusammen",
+                "avg_logprob": nan,
+                "compression_ratio": float("inf"),
+                "words": [
+                    {"word": " Hallo", "start": 0.2, "end": 0.6, "probability": nan},
+                    {"word": " zusammen", "start": nan, "end": nan, "probability": 0.9},
+                ],
+            }
+        ],
+    }
+    # Whisper's output arrives through a lenient JSON round trip, NaN included.
+    entry = finite_checkpoint(json.loads(json.dumps(raw)), 7)
+    canonical(entry)  # Strict JSON: this is what used to raise.
+    assert "window 7: unknown avg_logprob, compression_ratio, end, probability, start" in (
+        log_path().read_text()
+    )
+    assert "Hallo" not in log_path().read_text()
+
+    words, _ = owned_words([entry])
+    assert [w["text"] for w in words] == [" Hallo", " zusammen"]
+    hallo, zusammen = words
+    assert {"low_recognition_confidence", "low_word_confidence"} <= set(hallo["flags"])
+    assert "possible_repetition" not in hallo["flags"]
+    # Unknown word timing runs from the previous word to the segment's end, here the
+    # end of the window read because the segment's end is unknown too.
+    assert "segment_timing_only" in zusammen["flags"]
+    assert (zusammen["start"], zusammen["end"]) == (0.6, 2.0)

@@ -1,10 +1,34 @@
 """Bounded MLX inference with independent, persistent window results."""
 
+import math
 import time
 from importlib.metadata import version
 
 from .audio import RATE, waveform
+from .logs import log
 from .storage import fingerprint
+
+
+def without_nan(value, replaced, name=""):
+    """Whisper occasionally returns NaN or infinity (seen for a confidence or a timestamp).
+    Checkpoints are strict JSON, so such a value becomes None: unknown, not invented."""
+    if isinstance(value, float) and not math.isfinite(value):
+        replaced.add(name)
+        return None
+    if isinstance(value, dict):
+        return {key: without_nan(item, replaced, key) for key, item in value.items()}
+    if isinstance(value, list):
+        return [without_nan(item, replaced, name) for item in value]
+    return value
+
+
+def finite_checkpoint(cached, index):
+    replaced = set()
+    cached = without_nan(cached, replaced)
+    if replaced:
+        # Field names only: the log never holds transcript text.
+        log(f"transcription window {index}: unknown {', '.join(sorted(replaced))} (not a number)")
+    return cached
 
 
 def windows(pcm, seconds: float):
@@ -88,6 +112,7 @@ def run(store, config, progress):
             import json
 
             cached = json.loads(json.dumps(cached, default=lambda x: x.item()))
+            cached = finite_checkpoint(cached, index)
             store.put_json(key, cached, "transcription", elapsed)
         latest = next((s for s in reversed(cached["segments"]) if s["text"].strip()), None)
         progress(
@@ -99,7 +124,7 @@ def run(store, config, progress):
             **(
                 {
                     "latest": latest["text"].strip(),
-                    "latest_at": window["read_start"] / RATE + latest["start"],
+                    "latest_at": window["read_start"] / RATE + (latest["start"] or 0),
                 }
                 if latest
                 else {}
@@ -127,27 +152,37 @@ def owned_words(results):
             )
         for segment in entry["segments"]:
             flags = []
-            if segment.get("avg_logprob", 0) < -1:
+            # None is a confidence Whisper could not compute; treat it as low.
+            logprob = segment.get("avg_logprob", 0)
+            if logprob is None or logprob < -1:
                 flags.append("low_recognition_confidence")
-            if segment.get("compression_ratio", 0) > 2.4:
+            if (segment.get("compression_ratio") or 0) > 2.4:
                 flags.append("possible_repetition")
             if entry["language"] not in ("de", "fr", "it"):
                 flags.append("unexpected_language")
+            # Unknown segment timing falls back to the whole window read.
+            first = segment.get("start")
+            last = segment.get("end")
+            first = 0.0 if first is None else first
+            if last is None:
+                last = (window.get("read_end", window["end"]) - window["read_start"]) / RATE
             candidates = segment.get("words") or [
-                {
-                    "word": segment["text"],
-                    "start": segment["start"],
-                    "end": segment["end"],
-                    "segment_only": True,
-                }
+                {"word": segment["text"], "start": first, "end": last, "segment_only": True}
             ]
+            previous = first
             for word in candidates:
+                if word.get("start") is None or word.get("end") is None:
+                    # After the word before it, so the text keeps its order.
+                    word = {**word, "start": previous, "end": max(previous, last)}
+                    word["segment_only"] = True
+                previous = word["end"]
                 begin, end = offset + word["start"], offset + word["end"]
                 midpoint = (begin + end) / 2
                 if not (left <= midpoint < right):
                     continue
                 extra = list(flags)
-                if word.get("probability", 1) < 0.5:
+                probability = word.get("probability", 1)
+                if probability is None or probability < 0.5:
                     extra.append("low_word_confidence")
                 if word.get("segment_only"):
                     extra.append("segment_timing_only")
